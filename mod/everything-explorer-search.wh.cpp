@@ -3,35 +3,42 @@
 // @name            Everything Search for Explorer
 // @description     Replaces Explorer's native search box in-process with a field backed by Everything.
 // @version         0.5.0
-// @author          Alessandro
+// @author          Alessandro-Vecchio
+// @github          https://github.com/Alessandro-Vecchio
+// @homepage        https://github.com/Alessandro-Vecchio/everything-explorer-search
 // @include         explorer.exe
+// @architecture    x86-64
 // @compilerOptions -lole32 -loleaut32 -lshlwapi -lshell32 -lgdi32 -luuid -ladvapi32 -lcomctl32 -ld2d1 -lruntimeobject -lcoremessaging -luiautomationcore -lversion
 // ==/WindhawkMod==
 
 // ==WindhawkModReadme==
-// # Everything Search for Explorer
-//
-// Replaces Explorer's native search field directly in the XAML tree: no overlay
-// window and no second search box. Type a query and press Enter to open the
-// Everything results folder, scoped to the current folder when it has a real
-// filesystem path (virtual folders such as "This PC" search globally).
-// `Ctrl+F`, `Ctrl+E` and `F3` focus the field; Backspace edits text.
-//
-// Requires Everything 1.4+ running non-elevated and the companion
-// `EverythingSearchNse.dll` namespace extension installed via `install-nse.ps1`.
-// Folder windows must be hosted in separate processes
-// (`HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced\SeparateProcess
-// = 1`): XAML Diagnostics is attached only to `/factory` processes, and the
-// native bar is never touched when the window cannot be identified safely.
+/*
+# Everything Search for Explorer
+
+Replaces Explorer's native search field directly in the XAML tree: no overlay
+window and no second search box. Type a query and press Enter to open the
+Everything results folder, scoped to the current folder when it has a real
+filesystem path (virtual folders such as "This PC" search globally).
+`Ctrl+F`, `Ctrl+E` and `F3` focus the field; Backspace edits text.
+
+Requires Everything 1.4+ running non-elevated and the companion
+`EverythingSearchNse.dll` namespace extension installed via `install-nse.ps1`.
+Folder windows must be hosted in separate processes
+(`HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced\SeparateProcess
+= 1`): XAML Diagnostics is attached only to `/factory` processes, and the
+native bar is never touched when the window cannot be identified safely.
+*/
 // ==/WindhawkModReadme==
 
 // ==WindhawkModSettings==
-// - maxResults: 0
-//   $name: Maximum results
-//   $description: 0 returns every match; a positive value sets an explicit limit.
-// - scopeToFolder: true
-//   $name: Scope to current folder
-//   $description: Restrict the search to the folder shown in the current Explorer window.
+/*
+- maxResults: 0
+  $name: Maximum results
+  $description: 0 returns every match; a positive value sets an explicit limit.
+- scopeToFolder: true
+  $name: Scope to current folder
+  $description: Restrict the search to the folder shown in the current Explorer window.
+*/
 // ==/WindhawkModSettings==
 
 #define WIN32_LEAN_AND_MEAN
