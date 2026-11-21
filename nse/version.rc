@@ -1,0 +1,40 @@
+// Version block for EverythingSearchNse.dll.
+//
+// Explorer shows this in the DLL's Properties dialog, and the mod's setup panel
+// can compare it with ESX_COMPONENT_VERSION. Keep the numbers in version.h.
+#include <winver.h>
+
+#include "version.h"
+
+#define ESX_VER_FILEVERSION \
+    ESX_VERSION_MAJOR, ESX_VERSION_MINOR, ESX_VERSION_PATCH, ESX_VERSION_BUILD
+#define ESX_VER_FILEVERSION_STR \
+    ESX_VERSION_STRING "\0"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION ESX_VER_FILEVERSION
+ PRODUCTVERSION ESX_VER_FILEVERSION
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_DLL
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName", "Everything Search for Explorer"
+            VALUE "FileDescription", "Everything Search namespace extension"
+            VALUE "FileVersion", ESX_VER_FILEVERSION_STR
+            VALUE "InternalName", "EverythingSearchNse"
+            VALUE "OriginalFilename", "EverythingSearchNse.dll"
+            VALUE "ProductName", "Everything Search for Explorer"
+            VALUE "ProductVersion", ESX_VER_FILEVERSION_STR
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

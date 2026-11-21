@@ -1,0 +1,5 @@
+EXPORTS
+    ; Windhawk resolves entry points by their Itanium (clang/mingw) C++ mangled
+    ; names. MSVC mangles differently, so export aliases with the expected names.
+    _Z10Wh_ModInitv = Wh_ModInit
+    _Z12Wh_ModUninitv = Wh_ModUninit
