@@ -334,7 +334,7 @@ Bugs found and fixed during this test:
 ## Test checklist
 
 1. `tests/run-mingw.ps1`: does the NSE → IPC → Everything chain work? ✅
-2. `open-results.ps1`: does the virtual folder open and show the files? ✅
+2. `tools/open-results.ps1`: does the virtual folder open and show the files? ✅
 3. Context menu on a result: "Open", "Open file location", properties. ✅
    (probe; to be confirmed by hand after the crash fix)
 4. Drag & drop of a result onto another app. ⏳ (formats verified, to be tested
