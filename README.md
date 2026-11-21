@@ -85,11 +85,63 @@ limitare la ricerca: dalle cartelle virtuali come "Questo PC" resta disabilitata
   non può inviargli `WM_COPYDATA`; usare il servizio Everything).
 - La DLL della namespace extension installata (vedi sotto).
 
+## Setup iniziale (da clone pulito)
+
+1. **Strumenti** (una volta sola):
+
+   ```powershell
+   winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+   winget install Windhawk.Windhawk
+   winget install voidtools.Everything
+   ```
+
+   Servono anche il **Windows SDK** (per `cppwinrt.exe`) e i WinMD di WinUI nella
+   cache NuGet. Se non ci sono già, popolali con un progetto temporaneo:
+
+   ```powershell
+   mkdir "$env:TEMP\esx-winmd"; cd "$env:TEMP\esx-winmd"
+   dotnet new classlib -f net8.0
+   dotnet add package Microsoft.WindowsAppSDK
+   dotnet add package Microsoft.Web.WebView2
+   dotnet add package Microsoft.Windows.SDK.NET.Ref
+   dotnet restore
+   ```
+
+   `mod\regenerate-winrt.ps1` trova automaticamente i percorsi e genera gli
+   header. Se manca qualche WinMD, lo script indica quale pacchetto installare.
+
+2. **Configura Explorer** con `SeparateProcess=1` (comando in *Requisiti*), poi
+   riavvia Explorer.
+
+3. **Compila la NSE** (CMake + Ninja, già nei Build Tools):
+
+   ```powershell
+   .\build.ps1
+   ```
+
+   Produce `dist\bin\EverythingSearchNse.dll`.
+
+4. **Registra la NSE**: `.\install.ps1 -RestartExplorer`.
+
+5. **Compila la mod Windhawk**: `.\mod\build-mod.ps1`. Alla prima esecuzione
+   genera da solo le intestazioni C++/WinRT e produce
+   `dist\windhawk\local@everything-explorer-search_0.5.0_<build>.dll`.
+
+6. **Installa la mod**: `.\install-mod.ps1` (chiede admin) oppure carica la DLL
+   dal pannello di Windhawk.
+
+7. **Verifica rapida**: `.\tools\esx.ps1 -Query "*.ps1" -Global` apre la
+   cartella risultati senza passare dalla mod. Il probe end-to-end
+   `.\tests\run-mingw.ps1` richiede MinGW in
+   `$env:TEMP\mingw\mingw64\bin\g++.exe` (percorso passabile con `-Gcc`).
+
 ## Installazione
 
 ```powershell
+.\build.ps1                    # NSE: compila dist\bin\EverythingSearchNse.dll
 .\install.ps1                  # NSE: copia la DLL in %LOCALAPPDATA% e registra il CLSID HKCU
-.\install-mod.ps1              # mod: compila, registra in HKLM, riavvia Windhawk (admin)
+.\mod\build-mod.ps1            # mod: compila il .wh.cpp in dist\windhawk
+.\install-mod.ps1              # mod: registra in HKLM, riavvia Windhawk (admin)
 ```
 
 `install-mod.ps1` usa `mod\build-mod.ps1`, che produce
