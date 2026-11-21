@@ -108,8 +108,8 @@ extern winrt::Microsoft::UI::Xaml::Controls::TextBox g_createdTextBox;
 class VisualTreeWatcher;
 struct CallbackProbeResult;
 
-// Phase A: per-window registry. The existing single-window replacement path is
-// left untouched as a fallback; nothing here mutates XAML yet.
+// Per-window registry for the XAML replacement. Every XAML mutation is
+// marshalled to the thread that owns IVisualTreeService3 for its process.
 void Log(const char* format, ...);
 struct AddTxResult;
 struct RollbackTxResult;
@@ -117,7 +117,6 @@ struct RollbackTxResult;
 enum class WindowPhase : int {
     Discovered = 1,
     XamlMapped = 2,
-    TextBoxCreated = 3,
     AddPending = 4,
     Replacing = 5,
     Active = 6,
@@ -147,7 +146,6 @@ struct WindowState {
     winrt::com_ptr<::IInspectable> originalNative;
     std::wstring origin;
     bool replacementActive = false;
-    bool addPosted = false;
     bool rollbackPosted = false;
     ULONGLONG insertTick = 0;
     std::shared_ptr<AddTxResult> addTx;
@@ -427,7 +425,6 @@ std::shared_ptr<CallbackProbeResult> ProbeForHandle(unsigned long long handle) {
 // window. The shell process has none and its XAML is busy: probing there is
 // the likely cause of the recent crashes during Windhawk injection.
 std::atomic<bool> g_probeAllowed{false};
-VisualTreeWatcher* g_probeWatcher = nullptr;
 winrt::com_ptr<::IInspectable> g_nativeObject;
 
 struct OwnerAddRequest {
@@ -473,7 +470,6 @@ struct AddTxResult {
 AddTxResult g_addTx;
 std::atomic<bool> g_addTxReported{false};
 std::atomic<bool> g_addTxPosted{false};
-HANDLE g_addMutex = nullptr;
 
 struct RollbackTxResult {
     std::atomic<bool> ready{false};
@@ -1047,8 +1043,8 @@ public:
     HRESULT AdviseResult() const { return m_adviseResult.load(); }
     InstanceHandle SearchElementHandle() const { return m_searchElement.load(); }
 
-    // Phase 2b.1: read-only inspection of the collection that owns the native
-    // search box. AddChild needs the COLLECTION handle, not the parent element.
+    // Read-only inspection of the collection that owns the native search box:
+    // AddChild needs the COLLECTION handle, not the parent element.
     struct CollectionProbe {
         InstanceHandle collection = 0;
         unsigned index = 0;
@@ -1142,8 +1138,8 @@ public:
         return S_OK;
     }
 
-    // Phase 2a: register a TextBox with the XAML diagnostics service without
-    // inserting it anywhere. No visual tree mutation.
+    // Register a TextBox with the XAML diagnostics service without inserting it
+    // anywhere: no visual tree mutation at this point.
     // The original service interface is valid only on the owner thread; the
     // message-only WndProc runs there and uses this accessor.
     IVisualTreeService3* OwnerService() const { return m_serviceOriginal.get(); }
@@ -1696,7 +1692,7 @@ private:
         const bool added = mutationType == Add;
 
         // Reset the single-probe slot when its element is removed, so a later
-        // re-add is a fresh experiment.
+        // re-add starts a fresh replacement attempt.
         if (!added &&
             g_callbackProbe.handle.load() ==
                 static_cast<unsigned long long>(element.Handle)) {
@@ -1754,7 +1750,6 @@ private:
                 result.threadId = GetCurrentThreadId();
                 result.ownerThread = m_ownerThreadId;
                 result.tidMismatch = (result.threadId != m_ownerThreadId);
-                g_probeWatcher = this;
 
                 // Post the work to the invisible channel and return immediately.
                 // The WndProc runs on the owner thread after this callback ends.
@@ -2778,24 +2773,10 @@ void ForgetUiaFrame(HWND frame) {
     }
 }
 
-// Phase 2a is deliberately limited to ONE verified XAML_MAPPED window. It
-// creates a TextBox and registers it with diagnostics, but never inserts it.
-constexpr bool kPhase2CreateOnly = true;
+// State shared between the XAML callbacks and the owner channel.
 winrt::Microsoft::UI::Xaml::Controls::TextBox g_createdTextBox{nullptr};
 InstanceHandle g_createdHandle = 0;
-DWORD g_experimentPid = 0;
-HWND g_experimentFrame = nullptr;
-bool g_experimentStarted = false;
-
-constexpr bool kPhase2bAddChild = false;
-constexpr wchar_t kExperimentMutexName[] =
-    L"Local\\EverythingExplorerSearch_DirectXamlExperiment";
-HANDLE g_experimentMutex = nullptr;
-winrt::com_ptr<VisualTreeWatcher> g_experimentWatcher;
-InstanceHandle g_experimentElement = 0;
-InstanceHandle g_experimentParent = 0;
-unsigned g_experimentIndex = 0;
-bool g_addAttempted = false;
+HWND g_lastKnownFrame = nullptr;
 
 // ------------------------------------------------ search command-bar buttons
 
@@ -5013,13 +4994,13 @@ void ScanFrames() {
     }, reinterpret_cast<LPARAM>(&frames));
 
     if (g_replacementActive.load()) {
-        if (!g_experimentFrame && !frames.empty()) {
-            g_experimentFrame = frames.front();
+        if (!g_lastKnownFrame && !frames.empty()) {
+            g_lastKnownFrame = frames.front();
         }
-        if (g_experimentFrame && !IsWindow(g_experimentFrame)) {
-            Log("OWNER ROLLBACK: frame %p gone", g_experimentFrame);
+        if (g_lastKnownFrame && !IsWindow(g_lastKnownFrame)) {
+            Log("OWNER ROLLBACK: frame %p gone", g_lastKnownFrame);
             RestoreReplacement(true);
-            g_experimentFrame = nullptr;
+            g_lastKnownFrame = nullptr;
         }
     }
 
@@ -5108,7 +5089,7 @@ DWORD WINAPI CoordinatorThread(LPVOID) {
         // the delay we are trying to remove.
 
         ULONGLONG lastInventory = 0;
-        ULONGLONG lastPhase2Attempt = 0;
+        ULONGLONG lastReplacementAttempt = 0;
 
         for (;;) {
             HANDLE stopHandles[] = {g_stopEvent};
@@ -5225,8 +5206,8 @@ DWORD WINAPI CoordinatorThread(LPVOID) {
                 lastInventory = now;
                 LogProcessInventory();
             }
-            if (now - lastPhase2Attempt >= 2000) {
-                lastPhase2Attempt = now;
+            if (now - lastReplacementAttempt >= 2000) {
+                lastReplacementAttempt = now;
                 LogXamlCallbackResult();
                 LogWindowStates();
                 LogAddTransactionResult();
