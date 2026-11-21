@@ -171,7 +171,11 @@ pacchetti `Microsoft.WindowsAppSDK.*`, `Microsoft.Web.WebView2` e
 .\mod\regenerate-winrt.ps1 -Force
 ```
 
-Il log della mod va in `%TEMP%\everything-explorer-search.log`.
+Il log della mod va in `%TEMP%\everything-explorer-search.log`. Per analizzare un
+problema esegui `.\tools\diagnose.ps1`: decodifica i request file, segnala le
+combinazioni rotte (per esempio il bit di scope con cartella vuota) e mostra gli
+eventi di log della stessa finestra. I problemi aperti sono registrati in
+`docs/KNOWN-ISSUES.md`.
 
 ```powershell
 .\tools\esx.ps1 -Query "fattura" -Folder "C:\Users\<utente>\Documenti"
@@ -221,7 +225,9 @@ mod/                     mod Windhawk: sostituzione XAML della barra nativa
 mod/regenerate-winrt.ps1 genera le intestazioni C++/WinRT (non committate)
 tests/                   probe NSE, IPC grezzo, menu/vista dal vivo
 tools/esx.ps1            trigger di test senza mod
+tools/diagnose.ps1       correla log della mod e request file per scheda
 docs/DEBUGGING.md        metodologia e lezioni sui test dei crash
+docs/KNOWN-ISSUES.md     registro strutturato dei problemi aperti
 ```
 
 ## Licenza

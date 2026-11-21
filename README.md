@@ -173,7 +173,11 @@ regeneration:
 .\mod\regenerate-winrt.ps1 -Force
 ```
 
-The mod log goes to `%TEMP%\everything-explorer-search.log`.
+The mod log goes to `%TEMP%\everything-explorer-search.log`. To inspect a
+problem, run `.\tools\diagnose.ps1`: it decodes every request file, flags broken
+combinations (such as a scope bit with an empty folder) and shows the related
+log events for the same window. Open problems are tracked in
+`docs/KNOWN-ISSUES.md`.
 
 ```powershell
 .\tools\esx.ps1 -Query "invoice" -Folder "C:\Users\<user>\Documents"
@@ -222,7 +226,9 @@ mod/                     Windhawk mod: XAML replacement of the native bar
 mod/regenerate-winrt.ps1 generates the C++/WinRT headers (not committed)
 tests/                   NSE probes, raw IPC, live menu/view tests
 tools/esx.ps1            test trigger without the mod
+tools/diagnose.ps1       correlates the mod log with per-tab request files
 docs/DEBUGGING.md        crash-test methodology and lessons learned
+docs/KNOWN-ISSUES.md     structured ledger of open problems
 ```
 
 ## License
