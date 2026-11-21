@@ -1,5 +1,8 @@
 # Indagine sul crash di Explorer
 
+Nota: i riferimenti a `xaml-spike/spike.cpp` sono storici. Il codice ora è
+`mod/everything-explorer-search.wh.cpp`.
+
 ## Causa (accertata)
 
 Il crash-loop era causato dalla mod Windhawk **`taskbar-fluent-media-player`

@@ -1,26 +1,25 @@
 # Everything Search for Explorer
 
 Ricerca istantanea con [Everything](https://www.voidtools.com/) **dentro** le
-finestre di Esplora file: si usa la casella di ricerca nativa di Explorer come
-input, ma i risultati sono una vera cartella servita da una namespace extension
-COM.
+finestre di Esplora file: la casella di ricerca nativa viene sostituita nel
+visual tree XAML di Explorer, senza overlay e senza finestre aggiuntive. I
+risultati sono una vera cartella servita da una namespace extension COM.
 
 Due componenti:
 
-- una **mod Windhawk** che legge il testo della casella di ricerca nativa, lo
-  passa a Everything e installa/aggiorna l'altro pezzo;
+- una **mod Windhawk** (`local@everything-explorer-search`) che inserisce il
+  campo nel posto della barra nativa e passa la query a Everything;
 - una **shell extension** (`EverythingSearchNse.dll`) che mostra i risultati
   come una cartella di Explorer.
 
 Everything resta obbligatorio: Ã¨ il motore di ricerca, non viene reimplementato.
 
-Stato attuale: **funziona dal vivo in Explorer** su Windows 11 x64. La mod e la
-DLL sono complete; la catena Ã¨ verificata sia fuori processo
-(`tests/run-mingw.ps1`) sia dentro `explorer.exe`: cartella virtuale in vista
-**Contenuto** con tipo/dimensione/data, doppio clic che apre il file, drag & drop
-con `CF_HDROP` valido. L'ultima versione verificata Ã¨ quella in
-`nse/version.h`. Il build ufficiale MSVC non Ã¨ mai stato eseguito (su questa
-macchina c'Ã¨ solo MinGW). Vedi *Limiti noti*.
+Stato attuale: **funziona dal vivo in Explorer** su Windows 11 x64. La mod
+sostituisce la barra nativa in circa 1 s dall'apertura della finestra, con
+scope corretto (globale per le cartelle virtuali come "Questo PC"). La catena Ã¨
+verificata dentro `explorer.exe`: cartella virtuale in vista **Contenuto** con
+tipo/dimensione/data, doppio clic che apre il file, drag & drop con `CF_HDROP`
+valido. Vedi `docs/DIRECT-XAML-REPLACEMENT.md` per architettura e limiti.
 
 ## Come funziona
 
@@ -122,26 +121,14 @@ winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --passi
 .\package.ps1                     # dist\EverythingSearchNse-v<versione>.dll + SHA256
 ```
 
-Build della mod Windhawk, con il clang incluso in Windhawk (nessun SDK da
-installare):
+Build della mod Windhawk (MSVC x64, con le intestazioni C++/WinRT giÃ  presenti
+in `mod\generated`):
 
 ```powershell
 .\mod\build-mod.ps1               # dist\windhawk\local@everything-explorer-search_<ver>_<build>.dll
-.\mod\build-mod.ps1 -Trace        # build di debug: Explorer scrive %TEMP%\esx-mod.log
 ```
 
-Build e registrazione del prototipo XAML in Windhawk (richiede UAC e riavvia
-Windhawk; per sicurezza resta disabilitato):
-
-```powershell
-.\xaml-spike\install-spike.ps1
-```
-
-L'attivazione esplicita con `-Enable` Ã¨ riservata a test dal vivo: il prototipo
-usa XAML Diagnostics non supportato e una build precedente ha causato crash di
-Explorer su questa macchina. Il test corrente ha confermato il rendering del
-sostituto senza crash; mantenere lo spike disabilitato fuori dai test finchÃ© non
-sono verificati anche Invio, ridimensionamento e chiusura della finestra.
+Il log della mod va in `%TEMP%\everything-explorer-search.log`.
 
 Build di verifica senza MSVC (MinGW), con probe end-to-end:
 
@@ -150,8 +137,7 @@ Build di verifica senza MSVC (MinGW), con probe end-to-end:
 ```
 
 Il probe carica la DLL fuori processo, enumera la cartella virtuale e stampa
-quello che Explorer vedrebbe; controlla anche la compilazione della mod con uno
-stub dell'API Windhawk. Gli altri probe servono per i test dal vivo:
+quello che Explorer vedrebbe. Gli altri probe servono per i test dal vivo:
 
 | Probe | Cosa verifica |
 |---|---|
@@ -167,19 +153,13 @@ stub dell'API Windhawk. Gli altri probe servono per i test dal vivo:
 1. Installa Everything 1.4.1+ e lascialo in esecuzione, **senza** "Run as
    administrator" (altrimenti Explorer non puÃ² parlargli: usa il servizio
    Everything e disattiva l'elevazione).
-2. Installa la mod da Windhawk e attivala.
-3. Premi `Ctrl+Shift+F`: si apre il pannello di setup con lo stato di
-   Everything e della shell extension.
-4. Scarica la DLL dalla pagina delle release, poi premi **Install** (usa
-   l'ultimo `EverythingSearchNse*.dll` in Download) oppure **Choose file**.
+2. Installa la shell extension con `.\install.ps1` (scrive le chiavi `HKCU`
+   `CLSID\{7B39C2A2-3E1F-4E4C-9E58-2D9A7B1C4F60}` e copia la DLL in
+   `%LOCALAPPDATA%\EverythingExplorerSearch\nse\<versione>\`).
+3. Installa la mod da Windhawk e attivala.
 
-La mod copia la DLL in
-`%LOCALAPPDATA%\EverythingExplorerSearch\nse\<versione>\` e scrive le chiavi
-`HKCU` (`CLSID\{7B39C2A2-3E1F-4E4C-9E58-2D9A7B1C4F60}` + stato). Nessun admin,
-nessun riavvio. La cartella Ã¨ versionata perchÃ© una DLL giÃ  caricata da Explorer
-non si puÃ² sovrascrivere: un aggiornamento finisce in una cartella nuova.
-
-`Ctrl+Shift+F` apre il pannello di setup in qualsiasi momento.
+La cartella della DLL Ã¨ versionata perchÃ© una DLL giÃ  caricata da Explorer non
+si puÃ² sovrascrivere: un aggiornamento finisce in una cartella nuova.
 
 ### A mano (sviluppo)
 
@@ -197,19 +177,27 @@ non si puÃ² sovrascrivere: un aggiornamento finisce in una cartella nuova.
 
 Stessa idea di `install.ps1`, ma per la mod: qui serve l'elevazione perchÃ©
 Windhawk tiene mod e sorgenti in `C:\ProgramData\Windhawk` e la registrazione in
-`HKLM`. Lo script compila il `.wh.cpp` con `mod\build-mod.ps1` (stesso clang e
-stessa riga di comando dell'editor di Windhawk), copia la DLL in
-`Engine\Mods\64`, allinea il sorgente in `ModsSource`, riscrive la chiave della
-mod con `Disabled=0` e i valori predefiniti (`maxResults`, `scopeToFolder`),
-poi riavvia Windhawk. Explorer non viene terminato: la build nuova entra in una
-finestra successiva. `-SkipBuild` riusa l'ultima DLL in `dist\windhawk`,
+`HKLM`. Lo script compila il `.wh.cpp` con `mod\build-mod.ps1`, copia la DLL e
+il bootstrapper `Microsoft.WindowsAppRuntime.Bootstrap.dll` in `Engine\Mods\64`,
+allinea il sorgente in `ModsSource`, riscrive la chiave della mod con
+`Disabled=0` e i valori predefiniti (`maxResults`, `scopeToFolder`), poi riavvia
+Windhawk. Explorer non viene terminato: la build nuova entra in una finestra
+successiva. `-SkipBuild` riusa l'ultima DLL in `dist\windhawk`,
 `-NoRestart` lascia Windhawk spento.
+
+PerchÃ© la sostituzione XAML funzioni, le finestre di cartella devono essere
+ospitate in processi separati:
+
+```powershell
+Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' SeparateProcess 1 -Type DWord
+```
 
 ### Prima di pubblicare
 
-Sostituisci `ESX_RELEASES_URL` in `mod/everything-explorer-search.wh.cpp` (ora
-contiene `CHANGE-ME`) con la pagina release del tuo repository: il pulsante
-**Download** apre quel link, la mod non scarica nulla da sola.
+Aggiorna `nse/version.h` e la versione nel blocco `==WindhawkMod==` di
+`mod/everything-explorer-search.wh.cpp`, poi ricorda che il pannello di setup
+(`Ctrl+Shift+F`) non fa piÃ¹ da downloader: la DLL della shell extension va
+distribuita con il pacchetto.
 
 ## Prova senza il mod
 
@@ -248,11 +236,12 @@ Scrive `request.txt` e apre una nuova finestra su
 shared/protocol.h        formato request.txt (mod â†” NSE)
 shared/everything_ipc.h  definizioni minime del protocollo IPC QUERY2
 nse/                     namespace extension + client IPC
-mod/                     mod Windhawk (.wh.cpp, si compila in Windhawk)
-mod/build-mod.ps1        compila la mod con il toolchain di Windhawk
+mod/                     mod Windhawk: sostituzione XAML della barra nativa
+mod/build-mod.ps1        compila la mod con MSVC x64 (wrapper di build-mod.cmd)
+mod/generated/           intestazioni C++/WinRT generate, richieste dal build
 install-mod.ps1          installa la mod in HKLM (chiede admin)
 uninstall-mod.ps1        rimuove la mod
-tests/                   probe NSE, IPC grezzo, menu/vista dal vivo, check mod
+tests/                   probe NSE, IPC grezzo, menu/vista dal vivo
 tools/esx.ps1            trigger di test senza mod
 docs/DESIGN.md           dettagli di protocollo, PIDL, refresh, roadmap
 ```

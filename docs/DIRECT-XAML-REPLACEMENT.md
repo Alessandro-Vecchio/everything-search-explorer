@@ -1,9 +1,11 @@
-# Direct XAML Replacement (spike 0.1)
+# Direct XAML Replacement (mod ufficiale 0.5)
 
 ## Stato
 
-Sostituzione diretta del controllo di ricerca nativo di Explorer, senza overlay
-Win32 e senza `DesktopWindowXamlSource`. Verificata su una finestra di test:
+Implementazione ufficiale in `mod/everything-explorer-search.wh.cpp` (ID Windhawk
+`local@everything-explorer-search`). Sostituzione diretta del controllo di ricerca
+nativo di Explorer, senza overlay Win32 e senza `DesktopWindowXamlSource`.
+Verificata su finestre `/separate`, `Ctrl+N` e finestre aperte dalla taskbar:
 
 - layout copiato dal controllo nativo (`Grid.Row/Column`, `RowSpan/ColumnSpan`,
   `Margin`, allineamenti, vincoli dimensionali);
@@ -77,6 +79,13 @@ violation in esecuzione sul thread `executor`; ora si usa `detach()`.
 
 - `SeparateProcess = 1` resta necessario: solo i processi `/factory` espongono
   XAML Diagnostics; la finestra shell non viene mai agganciata.
-- Ricerca da "Questo PC" da verificare: la scope virtuale
-  (`::{20D04FE0-...}`) non Ã¨ un percorso filesystem e puÃ² produrre zero risultati
-  in Everything.
+- Le cartelle virtuali (per esempio "Questo PC") non hanno un percorso
+  filesystem: la scope resta vuota e la ricerca Ã¨ globale, come nella vecchia
+  versione con overlay. Le cartelle reali restano scoped.
+
+## Nota di build
+
+Il build MSVC deve esportare `InternalWhModPtr`: Windhawk lo cerca nel DLL per
+iniettare il contesto usato da `Wh_GetIntSetting`. Senza quell'export il mod
+crasha in `windhawk.dll+0xFD7F` appena legge le impostazioni. Il vecchio build
+clang lo esportava automaticamente (`--export-all-symbols`).

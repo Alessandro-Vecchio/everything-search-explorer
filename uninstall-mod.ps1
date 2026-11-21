@@ -60,6 +60,8 @@ if (Test-Path $key) {
 
 Get-ChildItem $engineMods -Filter "$modId`_*.dll" -ErrorAction SilentlyContinue |
     Remove-Item -Force -ErrorAction SilentlyContinue
+$bootstrap = Join-Path $engineMods 'Microsoft.WindowsAppRuntime.Bootstrap.dll'
+if (Test-Path $bootstrap) { Remove-Item $bootstrap -Force -ErrorAction SilentlyContinue }
 
 $source = "C:\ProgramData\Windhawk\ModsSource\$modId.wh.cpp"
 if (Test-Path $source) { Remove-Item $source -Force }

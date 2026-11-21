@@ -123,6 +123,14 @@ if ($needsCopy) {
     Copy-Item $Dll $target -Force
 }
 
+# The WindowsAppRuntime bootstrapper is not part of the Windhawk engine. The
+# XAML replacement needs it next to the mod DLL.
+$bootstrapSource = Join-Path $PSScriptRoot 'mod\bin\Microsoft.WindowsAppRuntime.Bootstrap.dll'
+if (Test-Path -LiteralPath $bootstrapSource) {
+    Copy-Item -LiteralPath $bootstrapSource `
+        -Destination (Join-Path $engineMods 'Microsoft.WindowsAppRuntime.Bootstrap.dll') -Force
+}
+
 # Keep the source in sync with the installed binary: the Windhawk UI shows and
 # edits ModsSource, and it must not be an older build.
 Copy-Item $source (Join-Path $modsSource "$modId.wh.cpp") -Force

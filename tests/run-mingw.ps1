@@ -67,21 +67,6 @@ if ($LASTEXITCODE -ne 0) { throw "view probe build failed ($LASTEXITCODE)" }
     '-o' "$out/rightclick_probe.exe" '-lshell32' '-lshlwapi' '-lole32' '-loleaut32' '-luuid'
 if ($LASTEXITCODE -ne 0) { throw "right click probe build failed ($LASTEXITCODE)" }
 
-Write-Host 'Checking the mod source (compile only)...'
-& $Gcc @common '-Wall' '-Wextra' '-c' "$root/tests/mod_compile_stub.cpp" `
-    '-o' "$out/mod_compile_stub.o"
-if ($LASTEXITCODE -ne 0) { throw "mod compile check failed ($LASTEXITCODE)" }
-
-# The mod decides whether an update is installed by comparing this value with
-# the version it wrote in the registry; it must match the DLL build.
-$dllVersion = (Select-String -Path "$root/nse/version.h" `
-    -Pattern 'ESX_VERSION_STRING\s+"([^"]+)"').Matches[0].Groups[1].Value
-$modVersion = (Select-String -Path "$root/mod/everything-explorer-search.wh.cpp" `
-    -Pattern 'ESX_COMPONENT_VERSION\s+L"([^"]+)"').Matches[0].Groups[1].Value
-if ($dllVersion -ne $modVersion) {
-    throw "Version mismatch: nse/version.h=$dllVersion, mod=$modVersion"
-}
-Write-Host "Version check ok ($dllVersion)"
 
 $dataDir = Join-Path $env:LOCALAPPDATA 'EverythingExplorerSearch'
 New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
