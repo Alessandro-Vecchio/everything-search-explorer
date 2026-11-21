@@ -554,6 +554,9 @@ void Log(const char* format, ...) {
     CloseHandle(file);
 }
 
+// Window lookup helpers. FindFrame returns the top-level Explorer window;
+// ActiveTabWindow resolves the active tab inside it. TabWindowForRect and
+// TabWindowForThread are fallbacks for when focus-based detection fails.
 HWND FindFrame() {
     struct FrameSearch {
         DWORD processId;
@@ -837,6 +840,9 @@ struct OwnerRequest {
 class VisualTreeWatcher;
 extern std::mutex g_hookOwnersMutex;
 extern std::unordered_map<DWORD, VisualTreeWatcher*> g_hookOwners;
+// "Owner" means the thread that owns IVisualTreeService3 for an Explorer
+// process: XAML mutations must run there. The hook and the message channel
+// below are only a way to marshall work onto that thread.
 LRESULT CALLBACK OwnerGetMessageHook(int code, WPARAM wParam, LPARAM lParam);
 
 class VisualTreeWatcher
@@ -3138,7 +3144,7 @@ static HRESULT AddSearchCommandBarButtons(IXamlDiagnostics* diagnostics,
     return S_OK;
 }
 
-static void RunC3ProbeForState(const std::shared_ptr<WindowState>& state) {
+static void ReplaceSearchBoxForState(const std::shared_ptr<WindowState>& state) {
     if (!state || !state->watcher) return;
 
     if (state->c2Done.load() || state->c2Running.exchange(true)) return;
@@ -3506,7 +3512,7 @@ static void RunC3ProbeForState(const std::shared_ptr<WindowState>& state) {
     state->c2Running.store(false);
 }
 
-static void RunC3ForReadyStates() {
+static void ReplaceSearchBoxForReadyStates() {
     std::vector<std::shared_ptr<WindowState>> targets;
     {
         std::lock_guard<std::mutex> guard(g_windowStatesMutex);
@@ -3519,216 +3525,9 @@ static void RunC3ForReadyStates() {
             }
         }
     }
-    for (auto& state : targets) RunC3ProbeForState(state);
+    for (auto& state : targets) ReplaceSearchBoxForState(state);
 }
-void TryCreateExperimentTextBox() {
-    if (!g_callbackProbe.ready.load() || g_createdHandle != 0 || !g_probeWatcher) {
-        return;
-    }
-    const unsigned long long handle = g_callbackProbe.handle.load();
-    if (!handle) return;
-    const InstanceHandle nativeHandle = static_cast<InstanceHandle>(handle);
-    auto state = FindStateForNative(nativeHandle);
-    const HWND frame = state ? state->frame : g_experimentFrame;
-    const HRESULT hr = g_probeWatcher->RunOnDispatcher(
-        nativeHandle, [watcher = g_probeWatcher, nativeHandle, frame, state]() {
-            auto diagnostics = watcher->OwnerDiagnostics();
-            if (!diagnostics) {
-                Log("DIRECT layout abort: no XAML diagnostics");
-                return E_UNEXPECTED;
-            }
-
-            winrt::com_ptr<::IInspectable> nativeAbi{nullptr};
-            const HRESULT nativeHr = diagnostics->GetIInspectableFromHandle(
-                nativeHandle, nativeAbi.put());
-            if (FAILED(nativeHr) || !nativeAbi) {
-                Log("DIRECT layout abort: GetIInspectableFromHandle hr=0x%08X",
-                    static_cast<unsigned long>(nativeHr));
-                return nativeHr;
-            }
-
-            winrt::Windows::Foundation::IInspectable nativeInspectable{nullptr};
-            winrt::copy_from_abi(nativeInspectable, nativeAbi.get());
-            winrt::Microsoft::UI::Xaml::FrameworkElement nativeElement{nullptr};
-            try {
-                nativeElement = nativeInspectable.as<
-                    winrt::Microsoft::UI::Xaml::FrameworkElement>();
-            } catch (...) {
-                const HRESULT castHr = winrt::to_hresult();
-                Log("DIRECT layout abort: native control is not FrameworkElement "
-                    "hr=0x%08X", static_cast<unsigned long>(castHr));
-                return castHr;
-            }
-
-            const int32_t gridRow =
-                winrt::Microsoft::UI::Xaml::Controls::Grid::GetRow(nativeElement);
-            const int32_t gridColumn =
-                winrt::Microsoft::UI::Xaml::Controls::Grid::GetColumn(nativeElement);
-            const int32_t gridRowSpan =
-                winrt::Microsoft::UI::Xaml::Controls::Grid::GetRowSpan(nativeElement);
-            const int32_t gridColumnSpan =
-                winrt::Microsoft::UI::Xaml::Controls::Grid::GetColumnSpan(nativeElement);
-
-            auto box = winrt::Microsoft::UI::Xaml::Controls::TextBox();
-            box.PlaceholderText(L"Cerca con Everything");
-            box.Visibility(winrt::Microsoft::UI::Xaml::Visibility::Visible);
-            box.IsEnabled(true);
-            box.IsTabStop(true);
-            box.IsHitTestVisible(true);
-
-            // Match the native element's layout contract. NaN Width/Height
-            // values are preserved, so the parent Grid continues to resize it.
-            box.Width(nativeElement.Width());
-            box.Height(nativeElement.Height());
-            box.MinWidth(nativeElement.MinWidth());
-            box.MaxWidth(nativeElement.MaxWidth());
-            box.MinHeight(nativeElement.MinHeight());
-            box.MaxHeight(nativeElement.MaxHeight());
-            box.Margin(nativeElement.Margin());
-            box.HorizontalAlignment(nativeElement.HorizontalAlignment());
-            box.VerticalAlignment(nativeElement.VerticalAlignment());
-            box.FlowDirection(nativeElement.FlowDirection());
-            winrt::Microsoft::UI::Xaml::Controls::Grid::SetRow(box, gridRow);
-            winrt::Microsoft::UI::Xaml::Controls::Grid::SetColumn(box, gridColumn);
-            winrt::Microsoft::UI::Xaml::Controls::Grid::SetRowSpan(box, gridRowSpan);
-            winrt::Microsoft::UI::Xaml::Controls::Grid::SetColumnSpan(box, gridColumnSpan);
-
-            Log("DIRECT layout copied from native: row=%d column=%d rowSpan=%d "
-                "columnSpan=%d width=%.2f height=%.2f actual=%.2fx%.2f "
-                "margin=%.1f,%.1f,%.1f,%.1f dispatcherThread=%lu",
-                gridRow, gridColumn, gridRowSpan, gridColumnSpan,
-                nativeElement.Width(), nativeElement.Height(),
-                nativeElement.ActualWidth(), nativeElement.ActualHeight(),
-                nativeElement.Margin().Left, nativeElement.Margin().Top,
-                nativeElement.Margin().Right, nativeElement.Margin().Bottom,
-                GetCurrentThreadId());
-
-            InstanceHandle collection = 0;
-            auto parent = winrt::Microsoft::UI::Xaml::Media::VisualTreeHelper::GetParent(
-                nativeElement);
-            if (auto panel =
-                    parent.try_as<winrt::Microsoft::UI::Xaml::Controls::Panel>()) {
-                auto children = panel.Children();
-                winrt::com_ptr<::IInspectable> rawChildren{nullptr};
-                rawChildren = children.as<::IInspectable>();
-                diagnostics->RegisterInstance(rawChildren.get(), &collection);
-            }
-            Log("DIRECT collection from Panel.Children hr=0x%08X handle=%llu depth=0",
-                collection ? S_OK : E_FAIL,
-                static_cast<unsigned long long>(collection));
-
-            box.GotFocus([](auto const&, auto const&) {
-                g_directTextHasFocus.store(true);
-                Log("DIRECT TextBox GotFocus thread=%lu", GetCurrentThreadId());
-            });
-            box.LostFocus([](auto const&, auto const&) {
-                g_directTextHasFocus.store(false);
-                Log("DIRECT TextBox LostFocus thread=%lu", GetCurrentThreadId());
-            });
-            box.KeyDown([box, frame](
-                            auto const&,
-                            winrt::Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& args) {
-                const int key = static_cast<int>(args.Key());
-                if (key == VK_RETURN) {
-                    const auto text = box.Text();
-                    if (text.empty()) {
-                        args.Handled(true);
-                        return;
-                    }
-                    const std::wstring query(text.c_str(), text.size());
-                    const bool inResults = IsResultsFolder(frame);
-                    std::wstring scope = inResults ? std::wstring()
-                                                   : CurrentFolderPath(frame);
-                    const bool written = WriteSearchRequest(query, scope, frame);
-                    Log("DIRECT Enter query='%ls' scope='%ls'", query.c_str(),
-                        scope.c_str());
-                    Log("DIRECT request written=%d", written ? 1 : 0);
-                    if (written) NavigateToResults(frame);
-                    const bool focused = box.Focus(
-                        winrt::Microsoft::UI::Xaml::FocusState::Programmatic);
-                    Log("DIRECT focus after navigate=%d", focused ? 1 : 0);
-                    args.Handled(true);
-                } else if (key == VK_ESCAPE) {
-                    box.Text(L"");
-                    args.Handled(true);
-                }
-            });
-
-            InstanceHandle created = 0;
-            const HRESULT regHr = watcher->RegisterCreatedInstance(box, &created);
-            Log("PHASE2 RegisterInstance hr=0x%08X handle=%llu",
-                static_cast<unsigned long>(regHr),
-                static_cast<unsigned long long>(created));
-            if (SUCCEEDED(regHr)) {
-                g_createdTextBox = box;
-                g_createdHandle = created;
-                if (state) {
-                    state->textBox = box;
-                    state->textBoxHandle = created;
-                    state->phase = WindowPhase::TextBoxCreated;
-                    Log("DIRECT TextBox registered state frame=%p gen=%llu "
-                        "handle=%llu", state->frame,
-                        static_cast<unsigned long long>(state->generation),
-                        static_cast<unsigned long long>(created));
-                }
-            }
-            return regHr;
-        });
-    Log("PHASE2 create dispatch hr=0x%08X", static_cast<unsigned long>(hr));
-}
-
-void PostAddTransaction() {
-    auto state = FindStateForNative(
-        static_cast<InstanceHandle>(g_callbackProbe.handle.load()));
-    if (!state || !state->watcher || state->addPosted) return;
-    if (!g_callbackProbe.ready.load() ||
-        g_callbackProbe.firstCollection == 0 ||
-        state->textBoxHandle == 0) {
-        Log("OWNER ADD skipped: state not ready");
-        return;
-    }
-    WindowPhase expected = WindowPhase::TextBoxCreated;
-    if (!state->phase.compare_exchange_strong(expected, WindowPhase::AddPending)) {
-        return;
-    }
-    HWND channel = state->watcher->ChannelWindow();
-    if (!channel || !IsWindow(channel)) {
-        state->phase.store(WindowPhase::Failed);
-        return;
-    }
-
-    auto* request = new (std::nothrow) OwnerAddRequest();
-    if (!request) {
-        state->phase.store(WindowPhase::Failed);
-        return;
-    }
-    request->state = state;
-    request->generation = state->generation;
-    request->collection = static_cast<InstanceHandle>(g_callbackProbe.firstCollection);
-    state->collectionHandle = request->collection;
-    request->native = state->nativeHandle;
-    request->created = state->textBoxHandle;
-    request->index = state->nativeIndex;
-    request->replaceNative = kReplaceNative;
-    state->addTx = std::make_shared<AddTxResult>();
-    state->rollbackTx = std::make_shared<RollbackTxResult>();
-    if (PostMessageW(channel, kOwnerAddMessage, 0,
-                     reinterpret_cast<LPARAM>(request))) {
-        state->addPosted = true;
-        Log("OWNER ADD posted frame=%p gen=%llu collection=%llu native=%llu "
-            "created=%llu index=%u",
-            state->frame, static_cast<unsigned long long>(state->generation),
-            static_cast<unsigned long long>(request->collection),
-            static_cast<unsigned long long>(request->native),
-            static_cast<unsigned long long>(request->created), request->index);
-    } else {
-        delete request;
-        state->phase.store(WindowPhase::Failed);
-        Log("OWNER ADD PostMessage failed err=%lu", GetLastError());
-    }
-}
-
-void LogAddTxResult() {
+void LogAddTransactionResult() {
     if (!g_addTx.ready.load() || g_addTxReported.exchange(true)) return;
     auto& tx = g_addTx;
     Log("OWNER ADD RESULT countHr=0x%08X before=%u nativeBeforeHr=0x%08X "
@@ -3755,13 +3554,6 @@ void LogAddTxResult() {
         static_cast<unsigned long>(tx.nativeGoneHr),
         static_cast<unsigned long>(tx.ourAfterRemoveHr),
         tx.ourAfterRemoveIndex);
-}
-
-void ReleaseExperimentMutex() {
-    if (!g_addMutex) return;
-    ReleaseMutex(g_addMutex);
-    CloseHandle(g_addMutex);
-    g_addMutex = nullptr;
 }
 
 void RestoreReplacement(bool synchronous) {
@@ -3833,7 +3625,7 @@ void LogRollbackResult() {
         static_cast<unsigned long>(rb.restoreHr));
 }
 
-void LogCallbackProbeResult() {
+void LogXamlCallbackResult() {
     if (!g_callbackProbe.ready.load() || g_callbackProbeReported.exchange(true)) {
         return;
     }
@@ -3908,204 +3700,6 @@ void LogProcessInventory() {
         "watchers=%zu xaml=%zu uia=%zu cmd='%ls'",
         pid, parentPid, trayPid == pid ? 1 : 0, trayPid, frames,
         SnapshotWatchers().size(), mapped, discovered, GetCommandLineW());
-}
-
-void TryPhase2CreateOnly() {
-    if (!kPhase2CreateOnly || g_experimentStarted) return;
-
-    DWORD chosenPid = 0;
-    HWND chosenFrame = nullptr;
-    InstanceHandle chosenElement = 0;
-    InstanceHandle chosenParent = 0;
-    unsigned chosenIndex = 0;
-    uintptr_t chosenWatcher = 0;
-    {
-        std::lock_guard<std::mutex> guard(g_observedMutex);
-        for (const auto& item : g_observedBoxes) {
-            if (item.second.source != ObservedSource::XamlMapped) continue;
-            for (const auto& other : g_observedBoxes) {
-                if (other.second.source == ObservedSource::UiaDiscovered &&
-                    other.second.key.pid == item.second.key.pid) {
-                    chosenPid = item.second.key.pid;
-                    chosenFrame = other.second.frame;
-                    chosenElement = item.second.key.handle;
-                    chosenParent = item.second.parent;
-                    chosenIndex = item.second.childIndex;
-                    chosenWatcher = item.second.key.owner;
-                    break;
-                }
-            }
-            if (chosenFrame) break;
-        }
-    }
-    if (!chosenFrame || !IsWindow(chosenFrame) || !chosenElement || !chosenWatcher) {
-        return;
-    }
-
-    winrt::com_ptr<VisualTreeWatcher> watcher;
-    for (auto& candidate : SnapshotWatchers()) {
-        if (reinterpret_cast<uintptr_t>(candidate.get()) == chosenWatcher) {
-            watcher = candidate;
-            break;
-        }
-    }
-    if (!watcher) return;
-
-    g_experimentStarted = true;
-    g_experimentPid = chosenPid;
-    g_experimentFrame = chosenFrame;
-
-    const HRESULT dispatchHr = watcher->RunOnDispatcher(
-        chosenElement, [watcher, chosenElement]() {
-            Log("PHASE2 create start pid=%lu frame=%p element=%llu",
-                g_experimentPid, g_experimentFrame,
-                static_cast<unsigned long long>(chosenElement));
-            auto box = winrt::Microsoft::UI::Xaml::Controls::TextBox();
-            box.PlaceholderText(L"Cerca con Everything (prototipo)");
-            // The first insertion is invisible and inert: no focus stealing,
-            // no keyboard routing, no visual change to Explorer.
-            box.Visibility(winrt::Microsoft::UI::Xaml::Visibility::Collapsed);
-            box.IsEnabled(false);
-            box.IsTabStop(false);
-            InstanceHandle handle = 0;
-            const HRESULT hr = watcher->RegisterCreatedInstance(box, &handle);
-            Log("PHASE2 RegisterInstance hr=0x%08X handle=%llu",
-                static_cast<unsigned long>(hr),
-                static_cast<unsigned long long>(handle));
-            if (SUCCEEDED(hr)) {
-                g_createdTextBox = box;
-                g_createdHandle = handle;
-                Log("PHASE2 textbox registered, tree untouched");
-            }
-            return hr;
-        });
-    Log("PHASE2 dispatch hr=0x%08X", static_cast<unsigned long>(dispatchHr));
-    if (SUCCEEDED(dispatchHr)) {
-        g_experimentWatcher = watcher;
-        g_experimentElement = chosenElement;
-        g_experimentParent = chosenParent;
-        g_experimentIndex = chosenIndex;
-    } else {
-        g_experimentStarted = false;
-    }
-}
-
-void TryPhase2bAddChild() {
-    if (g_addAttempted) return;
-    if (!g_createdHandle || !g_experimentWatcher || !g_experimentParent ||
-        !g_experimentElement) {
-        return;
-    }
-
-    // One experiment for the whole Windows session. WAIT_ABANDONED means the
-    // previous owner died mid-mutation: stop without touching anything.
-    HANDLE mutex = CreateMutexW(nullptr, FALSE, kExperimentMutexName);
-    if (!mutex) {
-        Log("PHASE2b ABORT: cannot create experiment mutex err=%lu", GetLastError());
-        g_addAttempted = true;
-        return;
-    }
-    const DWORD wait = WaitForSingleObject(mutex, 0);
-    if (wait == WAIT_ABANDONED) {
-        Log("PHASE2b ABORT: experiment mutex abandoned");
-        CloseHandle(mutex);
-        g_addAttempted = true;
-        return;
-    }
-    if (wait != WAIT_OBJECT_0) {
-        Log("PHASE2b ABORT: another session owns the experiment mutex");
-        CloseHandle(mutex);
-        g_addAttempted = true;
-        return;
-    }
-    g_experimentMutex = mutex;
-    Log("PHASE2b mutex acquired pid=%lu", GetCurrentProcessId());
-
-    VisualTreeWatcher::CollectionProbe probe;
-    HRESULT hr = g_experimentWatcher->ProbeCollection(
-        g_experimentParent, g_experimentIndex, g_experimentElement, &probe);
-    Log("PHASE2b probe hr=0x%08X verified=%d collection=%llu index=%u "
-        "property='%ls' itemType='%ls'",
-        static_cast<unsigned long>(hr), probe.verified ? 1 : 0,
-        static_cast<unsigned long long>(probe.collection), probe.index,
-        probe.propertyName.c_str(), probe.itemType.c_str());
-    if (FAILED(hr) || !probe.verified) {
-        Log("PHASE2b ABORT: collection not verified, tree untouched");
-        ReleaseMutex(mutex);
-        CloseHandle(mutex);
-        g_experimentMutex = nullptr;
-        g_addAttempted = true;
-        return;
-    }
-
-    if (!kPhase2bAddChild) {
-        Log("PHASE2b PROBE ONLY: collection verified, NO AddChild in this build");
-        ReleaseMutex(mutex);
-        CloseHandle(mutex);
-        g_experimentMutex = nullptr;
-        g_addAttempted = true;
-        return;
-    }
-
-    std::wstring before;
-    hr = g_experimentWatcher->CollectionSnapshot(probe.collection, &before);
-    Log("PHASE2b before hr=0x%08X %ls", static_cast<unsigned long>(hr),
-        before.c_str());
-
-    const unsigned insertAt = probe.index + 1;
-    hr = g_experimentWatcher->AddChildAt(probe.collection, g_createdHandle, insertAt);
-    Log("PHASE2b AddChild hr=0x%08X collection=%llu child=%llu index=%u",
-        static_cast<unsigned long>(hr),
-        static_cast<unsigned long long>(probe.collection),
-        static_cast<unsigned long long>(g_createdHandle), insertAt);
-
-    std::wstring after;
-    if (SUCCEEDED(hr)) {
-        hr = g_experimentWatcher->CollectionSnapshot(probe.collection, &after);
-        Log("PHASE2b after hr=0x%08X %ls", static_cast<unsigned long>(hr),
-            after.c_str());
-    }
-
-    unsigned ourIndex = 0;
-    const HRESULT findHr =
-        g_experimentWatcher->FindHandleIndex(probe.collection, g_createdHandle, &ourIndex);
-    Log("PHASE2b FindHandleIndex(our) hr=0x%08X index=%u",
-        static_cast<unsigned long>(findHr), ourIndex);
-    unsigned nativeIndex = 0;
-    const HRESULT nativeHr = g_experimentWatcher->FindHandleIndex(
-        probe.collection, g_experimentElement, &nativeIndex);
-    Log("PHASE2b FindHandleIndex(native) hr=0x%08X index=%u",
-        static_cast<unsigned long>(nativeHr), nativeIndex);
-
-    if (SUCCEEDED(findHr)) {
-        // The index may have shifted after insertion: search again immediately
-        // before removing instead of reusing the insertion index.
-        unsigned currentIndex = 0;
-        const HRESULT recheck = g_experimentWatcher->FindHandleIndex(
-            probe.collection, g_createdHandle, &currentIndex);
-        if (SUCCEEDED(recheck)) {
-            const HRESULT removeHr =
-                g_experimentWatcher->RemoveChildAt(probe.collection, currentIndex);
-            Log("PHASE2b rollback RemoveChild hr=0x%08X index=%u",
-                static_cast<unsigned long>(removeHr), currentIndex);
-        } else {
-            Log("PHASE2b rollback ABORT: our handle disappeared hr=0x%08X",
-                static_cast<unsigned long>(recheck));
-        }
-    } else {
-        Log("PHASE2b rollback skipped: our handle was never inserted");
-    }
-
-    std::wstring rolled;
-    hr = g_experimentWatcher->CollectionSnapshot(probe.collection, &rolled);
-    Log("PHASE2b rolledback hr=0x%08X %ls", static_cast<unsigned long>(hr),
-        rolled.c_str());
-
-    ReleaseMutex(mutex);
-    CloseHandle(mutex);
-    g_experimentMutex = nullptr;
-    g_addAttempted = true;
-    Log("PHASE2b experiment finished");
 }
 
 void StopAllXamlDiagnostics() {
@@ -5553,7 +5147,7 @@ DWORD WINAPI CoordinatorThread(LPVOID) {
             // would otherwise delay the replacement. The 2 s timer below is
             // only for verbose logging.
             CorrelateWindowStates();
-            RunC3ForReadyStates();
+            ReplaceSearchBoxForReadyStates();
 
             ScanFrames();
             UpdateGeometry();
@@ -5633,9 +5227,9 @@ DWORD WINAPI CoordinatorThread(LPVOID) {
             }
             if (now - lastPhase2Attempt >= 2000) {
                 lastPhase2Attempt = now;
-                LogCallbackProbeResult();
+                LogXamlCallbackResult();
                 LogWindowStates();
-                LogAddTxResult();
+                LogAddTransactionResult();
                 if (kAutoRollback) RestoreReplacement(false);
                 LogRollbackResult();
             }
