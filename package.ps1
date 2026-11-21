@@ -3,8 +3,8 @@
 
     Reads the version from nse/version.h, copies dist\bin\EverythingSearchNse.dll
     to dist\EverythingSearchNse-v<version>.dll and writes a SHA256 next to it.
-    Attach that DLL to a GitHub release; the mod's setup panel looks in Downloads
-    for EverythingSearchNse*.dll, so the name must keep that prefix.
+    Attach that DLL to a GitHub release; keep the EverythingSearchNse* prefix
+    so it can be recognised by the installer.
 #>
 [CmdletBinding()]
 param(

@@ -44,7 +44,7 @@ Set-ItemProperty -Path "$base\InprocServer32" -Name 'ThreadingModel' -Value 'Apa
 New-Item -Force -Path "$base\ShellFolder" | Out-Null
 Set-ItemProperty -Path "$base\ShellFolder" -Name 'Attributes' -Value 0x20000000 -Type DWord
 
-# Same state the mod writes, so its setup panel sees this install as its own.
+# Same state the mod writes, so it recognises this installation.
 $state = 'HKCU:\Software\EverythingExplorerSearch'
 New-Item -Force -Path $state | Out-Null
 Set-ItemProperty -Path $state -Name 'Version' -Value $version

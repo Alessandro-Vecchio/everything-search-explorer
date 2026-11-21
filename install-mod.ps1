@@ -38,15 +38,15 @@
 param(
     [string]$Dll,
     [switch]$SkipBuild,
-    [switch]$NoRestart
+    [switch]$NoRestart,
+    [string]$windhawkRoot = 'C:\Program Files\Windhawk',
+    [string]$engineMods = 'C:\ProgramData\Windhawk\Engine\Mods\64',
+    [string]$modsSource = 'C:\ProgramData\Windhawk\ModsSource'
 )
 
 $ErrorActionPreference = 'Stop'
 
 $modId        = 'local@everything-explorer-search'
-$windhawkRoot = 'C:\Program Files\Windhawk'
-$engineMods   = 'C:\ProgramData\Windhawk\Engine\Mods\64'
-$modsSource   = 'C:\ProgramData\Windhawk\ModsSource'
 $repoRoot     = $PSScriptRoot
 $source       = Join-Path $repoRoot 'mod\everything-explorer-search.wh.cpp'
 
@@ -60,6 +60,8 @@ if (-not $isAdmin) {
     if ($Dll) { $arguments += @('-Dll', "`"$Dll`"") }
     if ($SkipBuild) { $arguments += '-SkipBuild' }
     if ($NoRestart) { $arguments += '-NoRestart' }
+    $arguments += @('-windhawkRoot', "`"$windhawkRoot`"", '-engineMods', "`"$engineMods`"",
+                    '-modsSource', "`"$modsSource`"")
     Write-Host 'Requesting administrator rights...'
     $elevated = Start-Process -FilePath (Get-Process -Id $PID).Path -Verb RunAs `
         -ArgumentList $arguments -PassThru -Wait
@@ -97,8 +99,8 @@ if ($dllName -match "^$([regex]::Escape($modId))_(?<version>\d+(?:\.\d+)+)_\d+\.
     throw "Unexpected mod DLL name: $dllName"
 }
 
-# The mod only offers the component version it was built against: a mismatch
-# would make its setup panel reject an already installed DLL.
+# Warn when the mod and the shell extension were built against different
+# versions: they are distributed and installed separately.
 $componentVersion = (Select-String -Path (Join-Path $repoRoot 'nse\version.h') `
     -Pattern 'ESX_VERSION_STRING\s+"([^"]+)"').Matches[0].Groups[1].Value
 if ($componentVersion -ne $modVersion) {

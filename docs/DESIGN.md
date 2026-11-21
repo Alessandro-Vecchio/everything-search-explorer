@@ -220,7 +220,7 @@ points, without touching the box text:
 
 The mod's own calls are exempted with `tls_internalNavigation`, otherwise the
 block would also apply to navigation to our virtual folder. `-Trace` builds log
-to `%TEMP%\esx-mod.log` which hook was hit: if a future Windows build uses a
+to `%TEMP%\everything-explorer-search.log` which hook was hit: if a future Windows build uses a
 fourth entry point, the log shows it and it can simply be added.
 
 ## Refresh flow

@@ -104,4 +104,4 @@ Write-Host '--- search box after navigation ---'
 & (Join-Path $PSScriptRoot '..\build_check\focus_probe.exe') $frame.ToInt64() |
     Select-String -Pattern 'GetText|focus='
 Write-Host '--- mod trace (last 8 entries) ---'
-Get-Content "$env:TEMP\esx-mod.log" -Tail 8
+Get-Content "$env:TEMP\everything-explorer-search.log" -Tail 8 -ErrorAction SilentlyContinue

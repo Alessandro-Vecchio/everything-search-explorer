@@ -83,6 +83,8 @@ stays disabled in virtual folders such as "This PC".
   This is required because XAML Diagnostics is available only in `/factory`
   processes.
 - Windhawk with the `local@everything-explorer-search` mod enabled.
+- PowerShell 7+ to run the scripts (`#requires -Version 7.0`); Windows PowerShell
+  5.1 is not enough.
 - Everything 1.4.1+ running **non-elevated** (otherwise `explorer.exe` cannot send
   it `WM_COPYDATA`; use the Everything service).
 - The namespace extension DLL installed (see below).
@@ -135,8 +137,8 @@ stays disabled in virtual folders such as "This PC".
 
 7. **Quick check**: `.\tools\esx.ps1 -Query "*.ps1" -Global` opens the results
    folder without going through the mod. The end-to-end probe
-   `.\tests\run-mingw.ps1` requires MinGW at
-   `$env:TEMP\mingw\mingw64\bin\g++.exe` (override with `-Gcc`).
+   `.\tests\run-mingw.ps1` requires MinGW-w64: it uses `g++.exe` from `PATH`,
+   falls back to `$env:TEMP\mingw\mingw64\bin\g++.exe`, or accepts `-Gcc <path>`.
 
 ## Installation
 

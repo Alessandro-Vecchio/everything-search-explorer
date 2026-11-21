@@ -83,6 +83,8 @@ limitare la ricerca: dalle cartelle virtuali come "Questo PC" resta disabilitata
 
   Serve perché XAML Diagnostics è disponibile solo nei processi `/factory`.
 - Windhawk con la mod `local@everything-explorer-search` attiva.
+- PowerShell 7+ per eseguire gli script (`#requires -Version 7.0`); Windows
+  PowerShell 5.1 non basta.
 - Everything 1.4.1+ in esecuzione **senza elevazione** (altrimenti `explorer.exe`
   non può inviargli `WM_COPYDATA`; usare il servizio Everything).
 - La DLL della namespace extension installata (vedi sotto).

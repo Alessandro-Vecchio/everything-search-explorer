@@ -18,14 +18,15 @@
 #>
 [CmdletBinding()]
 param(
-    [switch]$NoProcessRestart
+    [switch]$NoProcessRestart,
+    [string]$windhawkRoot = 'C:\Program Files\Windhawk',
+    [string]$engineMods = 'C:\ProgramData\Windhawk\Engine\Mods\64',
+    [string]$modsSource = 'C:\ProgramData\Windhawk\ModsSource'
 )
 
 $ErrorActionPreference = 'Stop'
 
 $modId        = 'local@everything-explorer-search'
-$windhawkRoot = 'C:\Program Files\Windhawk'
-$engineMods   = 'C:\ProgramData\Windhawk\Engine\Mods\64'
 
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $isAdmin = (New-Object Security.Principal.WindowsPrincipal($identity)).IsInRole(
@@ -34,6 +35,8 @@ $isAdmin = (New-Object Security.Principal.WindowsPrincipal($identity)).IsInRole(
 if (-not $isAdmin) {
     $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"")
     if ($NoProcessRestart) { $arguments += '-NoProcessRestart' }
+    $arguments += @('-windhawkRoot', "`"$windhawkRoot`"", '-engineMods', "`"$engineMods`"",
+                    '-modsSource', "`"$modsSource`"")
     Write-Host 'Requesting administrator rights...'
     $elevated = Start-Process -FilePath (Get-Process -Id $PID).Path -Verb RunAs `
         -ArgumentList $arguments -PassThru -Wait
@@ -63,7 +66,7 @@ Get-ChildItem $engineMods -Filter "$modId`_*.dll" -ErrorAction SilentlyContinue 
 $bootstrap = Join-Path $engineMods 'Microsoft.WindowsAppRuntime.Bootstrap.dll'
 if (Test-Path $bootstrap) { Remove-Item $bootstrap -Force -ErrorAction SilentlyContinue }
 
-$source = "C:\ProgramData\Windhawk\ModsSource\$modId.wh.cpp"
+$source = Join-Path $modsSource "$modId.wh.cpp"
 if (Test-Path $source) { Remove-Item $source -Force }
 
 if (Test-Path (Join-Path $windhawkRoot 'windhawk.exe')) {

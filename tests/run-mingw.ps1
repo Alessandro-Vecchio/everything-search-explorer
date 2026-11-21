@@ -11,13 +11,26 @@ param(
     [switch]$Global,
     [switch]$Ipc,
     [switch]$Trace,
-    [string]$Gcc = "$env:TEMP\mingw\mingw64\bin\g++.exe"
+    [string]$Gcc
 )
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $out = Join-Path $root 'build_check'
 New-Item -ItemType Directory -Force -Path $out | Out-Null
+
+# Prefer g++ on PATH; fall back to the local MinGW-w64 layout used in development.
+if (-not $Gcc) {
+    $found = Get-Command g++.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($found) { $Gcc = $found.Source }
+}
+if (-not $Gcc -and (Test-Path (Join-Path $env:TEMP 'mingw\mingw64\bin\g++.exe'))) {
+    $Gcc = Join-Path $env:TEMP 'mingw\mingw64\bin\g++.exe'
+}
+if (-not $Gcc -or -not (Test-Path -LiteralPath $Gcc)) {
+    throw 'g++.exe not found. Install MinGW-w64 and pass -Gcc <path\to\g++.exe>, or add it to PATH.'
+}
+Write-Host "Using $Gcc"
 
 $defs = @('-DUNICODE', '-D_UNICODE', '-DWIN32_LEAN_AND_MEAN', '-DNOMINMAX',
           '-D_WIN32_WINNT=0x0A00', '-DNTDDI_VERSION=0x0A000000')

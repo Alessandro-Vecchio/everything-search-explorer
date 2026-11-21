@@ -16,7 +16,14 @@ if errorlevel 1 (
 if defined ESX_WINDHAWK_LIB (
   set "WHLIB=%ESX_WINDHAWK_LIB%"
 ) else (
-  set "WHLIB=C:\Program Files\Windhawk\Engine\1.7.3\64\windhawk.lib"
+  set "WHLIB="
+  for /d %%D in ("C:\Program Files\Windhawk\Engine\*") do (
+    if exist "%%~D\64\windhawk.lib" set "WHLIB=%%~D\64\windhawk.lib"
+  )
+)
+if not defined WHLIB (
+  echo windhawk.lib not found under C:\Program Files\Windhawk\Engine
+  exit /b 1
 )
 if not exist "%WHLIB%" (
   echo windhawk.lib not found: %WHLIB%
