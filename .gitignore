@@ -1,6 +1,7 @@
 build/
 build_check/
 dist/
+mod/generated/
 .vs/
 *.user
 *.obj

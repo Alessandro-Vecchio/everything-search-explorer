@@ -8,7 +8,8 @@ Prima di aprire una PR:
 1. Verifica che il comportamento sia riproducibile su Windows 11 x64 con
    `SeparateProcess=1` e Everything non elevato.
 2. Indica sempre.Windows / Explorer / Everything / versioni mod e NSE usate.
-3. Non inviare cambiamenti "di stile" su `mod/generated/`: è codice generato.
+3. Non committare `mod/generated/`: è generato da `mod\regenerate-winrt.ps1`
+   ed è ignorato da git (serve solo per compilare in locale).
 4. Se tocchi il contratto shell (`nse/`), prova anche `tests/run-mingw.ps1`.
 5. Tieni le modifiche piccole e separa correzioni di bug da nuove feature.
 

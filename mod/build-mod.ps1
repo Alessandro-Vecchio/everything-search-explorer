@@ -8,10 +8,14 @@
 
     Visual Studio and the Windhawk engine are discovered at build time: no
     machine-specific version is hardcoded in build-mod.cmd.
+
+    The C++/WinRT projection is not committed: regenerate-winrt.ps1 rebuilds it
+    from the installed Windows SDK and NuGet WinMD files when it is missing.
 #>
 [CmdletBinding()]
 param(
-    [switch]$Trace
+    [switch]$Trace,
+    [switch]$RegenerateWinrt
 )
 
 $ErrorActionPreference = 'Stop'
@@ -54,6 +58,18 @@ if (-not $lib) {
     throw "windhawk.lib not found under $engineRoot. Install Windhawk first."
 }
 $env:ESX_WINDHAWK_LIB = $lib.Path
+
+# --- C++/WinRT projection -----------------------------------------------------
+$generatedDir = Join-Path $PSScriptRoot 'generated'
+$regenerateScript = Join-Path $PSScriptRoot 'regenerate-winrt.ps1'
+if ($RegenerateWinrt -or -not (Test-Path -LiteralPath (Join-Path $generatedDir 'winrt\base.h'))) {
+    if (-not (Test-Path -LiteralPath $regenerateScript)) {
+        throw "C++/WinRT projection is missing and $regenerateScript was not found."
+    }
+    Write-Host 'Regenerating C++/WinRT projection...'
+    & $regenerateScript -OutputDir $generatedDir -Force
+    Write-Host 'Projection ready.'
+}
 
 & "$env:ComSpec" /d /c "`"$buildScript`""
 if ($LASTEXITCODE -ne 0) { throw "Build failed with exit code $LASTEXITCODE" }

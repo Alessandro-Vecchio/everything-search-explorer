@@ -104,8 +104,17 @@ il README e il codice).
 ## Build e test
 
 ```powershell
-.\mod\build-mod.ps1                          # mod Windhawk (MSVC x64, intestazioni in mod\generated)
+.\mod\build-mod.ps1                          # mod Windhawk (MSVC x64)
 .\tests\run-mingw.ps1 -Folder C:\Windows -Query '*.exe' -Max 20   # NSE senza MSVC + probe end-to-end
+```
+
+Le intestazioni C++/WinRT **non sono nel repo**: `mod\regenerate-winrt.ps1` le
+ricrea da Windows SDK e NuGet quando mancano (circa 30 MB, 254 file). Servono i
+pacchetti `Microsoft.WindowsAppSDK.*`, `Microsoft.Web.WebView2` e
+`Microsoft.Windows.SDK.NET.Ref` nella cache NuGet; per forzare la rigenerazione:
+
+```powershell
+.\mod\regenerate-winrt.ps1 -Force
 ```
 
 Il log della mod va in `%TEMP%\everything-explorer-search.log`.
@@ -155,7 +164,7 @@ shared/protocol.h        formato request (mod ↔ NSE), flag e filtri
 shared/everything_ipc.h  definizioni minime del protocollo QUERY2
 nse/                     namespace extension + client IPC
 mod/                     mod Windhawk: sostituzione XAML della barra nativa
-mod/generated/           intestazioni C++/WinRT generate, richieste dal build MSVC
+mod/regenerate-winrt.ps1 genera le intestazioni C++/WinRT (non committate)
 tests/                   probe NSE, IPC grezzo, menu/vista dal vivo
 tools/esx.ps1            trigger di test senza mod
 docs/                    note di progetto e indagine sui crash
@@ -163,5 +172,5 @@ docs/                    note di progetto e indagine sui crash
 
 ## Licenza
 
-MIT — vedi `LICENSE`. Il codice generato in `mod/generated/` e le intestazioni
-Windhawk restano di rispettivi proprietari; i relativi avvisi sono nei file.
+MIT — vedi `LICENSE`. Le intestazioni C++/WinRT generate e quelle di Windhawk
+restano di rispettivi proprietari; i relativi avvisi sono nei file.

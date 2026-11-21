@@ -193,8 +193,9 @@ sua cartella e l'aggiornamento è una copia nuova + rewrite della chiave.
 
 ### Build e install da sorgente
 
-La mod si compila anche fuori dall'editor: `mod\build-mod.ps1` usa MSVC x64 e
-le intestazioni C++/WinRT già generate in `mod\generated`. Individua
+La mod si compila anche fuori dall'editor: `mod\build-mod.ps1` usa MSVC x64.
+Le intestazioni C++/WinRT non sono committate: `mod\regenerate-winrt.ps1` le
+ricrea da Windows SDK e NuGet (254 file, ~30 MB) quando mancano. Individua
 automaticamente `vcvars64.bat` (BuildTools/Enterprise/Professional/Community)
 e la `windhawk.lib` dell'engine Windhawk installato (versione più alta), poi
 passa entrambi i percorsi a `mod\build-mod.cmd` tramite variabili d'ambiente:
