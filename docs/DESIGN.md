@@ -166,29 +166,13 @@ Every item is a real file. The NSE reimplements nothing:
 with", properties, copy, drag & drop and icons all come from the real filesystem
 item.
 
-## Mod installer and panel
+## Installation
 
 The mod cannot carry a binary (it is compiled from source inside Windhawk), so
-it acts as an installer:
-
-- `Ctrl+Shift+F` opens the panel; `Ctrl+F` opens it only when the component is
-  unusable or Everything is not running (a search on a nonexistent folder would
-  only be an error);
-- the panel shows: Everything status (absent / unreachable due to UIPI /
-  version), component status (not installed / DLL missing / expected version);
-- **Install** takes the newest `EverythingSearchNse*.dll` in Downloads,
-  **Choose file** opens `IFileOpenDialog`;
-- the copy is validated with `LoadLibraryEx(LOAD_LIBRARY_AS_DATAFILE)` before
-  registering the CLSID: a wrong file never reaches the registry;
-- registration is `HKCU\Software\Classes\CLSID\{GUID}` +
-  `HKCU\Software\EverythingExplorerSearch` (`Version`, `Path`), with
-  `ThreadingModel=Apartment` and `ShellFolder\Attributes = SFGAO_FOLDER`;
-- **Uninstall** deletes the keys and the file (if in use,
-  `MOVEFILE_DELAY_UNTIL_REBOOT`);
-- **Download** only opens the releases page: no automatic download, by design.
-
-> The `Ctrl+Shift+F` panel described above is historical: the current mod does
-> not ship it. Installation is done with `install.ps1`.
+the NSE DLL is installed separately with `install.ps1`, which registers the CLSID
+under `HKCU\Software\Classes\CLSID\{GUID}` (with
+`ThreadingModel=Apartment`) and stores version and path in
+`HKCU\Software\EverythingExplorerSearch`. See `README.md` for the commands.
 
 The DLL lives in `%LOCALAPPDATA%\EverythingExplorerSearch\nse\<version>\`: a DLL
 already mapped by Explorer cannot be overwritten, so each version has its own

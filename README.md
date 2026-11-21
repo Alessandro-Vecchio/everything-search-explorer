@@ -222,7 +222,7 @@ mod/                     Windhawk mod: XAML replacement of the native bar
 mod/regenerate-winrt.ps1 generates the C++/WinRT headers (not committed)
 tests/                   NSE probes, raw IPC, live menu/view tests
 tools/esx.ps1            test trigger without the mod
-docs/                    project notes and crash investigation
+docs/DEBUGGING.md        crash-test methodology and lessons learned
 ```
 
 ## License

@@ -221,7 +221,7 @@ mod/                     mod Windhawk: sostituzione XAML della barra nativa
 mod/regenerate-winrt.ps1 genera le intestazioni C++/WinRT (non committate)
 tests/                   probe NSE, IPC grezzo, menu/vista dal vivo
 tools/esx.ps1            trigger di test senza mod
-docs/                    note di progetto e indagine sui crash
+docs/DEBUGGING.md        metodologia e lezioni sui test dei crash
 ```
 
 ## Licenza
