@@ -26,8 +26,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$requestDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'EverythingExplorerSearch'
-$logPath = Join-Path $env:TEMP 'everything-explorer-search.log'
+$requestDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'EverythingSearchExplorer'
+$logPath = Join-Path $env:TEMP 'everything-search-explorer.log'
 
 function Get-FlagDescription {
     param([int]$Flags)

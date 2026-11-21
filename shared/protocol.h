@@ -23,7 +23,7 @@
 
 namespace esx {
 
-inline constexpr wchar_t kDataDirName[] = L"EverythingExplorerSearch";
+inline constexpr wchar_t kDataDirName[] = L"EverythingSearchExplorer";
 inline constexpr wchar_t kRequestFileName[] = L"request.txt";
 inline constexpr wchar_t kWindowRequestPrefix[] = L"request-";
 inline constexpr wchar_t kWindowRequestSuffix[] = L".txt";

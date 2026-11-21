@@ -33,10 +33,10 @@ if not exist "%WHLIB%" (
 set "OUT=%~dp0..\dist\windhawk"
 if not exist "%OUT%" mkdir "%OUT%"
 cl /nologo /std:c++20 /EHsc /LD /utf-8 /O2 /DUNICODE /D_UNICODE /DWH_MOD ^
-   /DWH_MOD_ID=L\"local@everything-explorer-search\" /DWH_MOD_VERSION=L\"0.5.0\" ^
+   /DWH_MOD_ID=L\"local@everything-search-explorer\" /DWH_MOD_VERSION=L\"0.5.0\" ^
    /I"%~dp0generated" ^
-   "%~dp0everything-explorer-search.wh.cpp" ^
-   /link /OUT:"%OUT%\everything-explorer-search.dll" ^
+   "%~dp0everything-search-explorer.wh.cpp" ^
+   /link /OUT:"%OUT%\everything-search-explorer.dll" ^
    /EXPORT:_Z10Wh_ModInitv=Wh_ModInit /EXPORT:_Z12Wh_ModUninitv=Wh_ModUninit ^
    /EXPORT:_Z21Wh_ModSettingsChangedv=Wh_ModSettingsChanged ^
    /EXPORT:InternalWhModPtr,DATA ^

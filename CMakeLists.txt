@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(EverythingExplorerSearch LANGUAGES CXX RC)
+project(EverythingSearchExplorer LANGUAGES CXX RC)
 
 if (NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "This project builds x64 only (Explorer is 64-bit on Windows 11).")

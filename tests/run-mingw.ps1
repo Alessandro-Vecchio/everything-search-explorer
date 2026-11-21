@@ -80,7 +80,7 @@ if ($LASTEXITCODE -ne 0) { throw "view probe build failed ($LASTEXITCODE)" }
 if ($LASTEXITCODE -ne 0) { throw "right click probe build failed ($LASTEXITCODE)" }
 
 
-$dataDir = Join-Path $env:LOCALAPPDATA 'EverythingExplorerSearch'
+$dataDir = Join-Path $env:LOCALAPPDATA 'EverythingSearchExplorer'
 New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
 # bit 0 = scope to folder, bit 1 = include folders.
 $flags = if ($Global) { 2 } else { 3 }

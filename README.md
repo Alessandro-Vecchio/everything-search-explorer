@@ -1,4 +1,4 @@
-# Everything Search for Explorer
+# Everything Search Explorer
 
 > **⚠️ WORK IN PROGRESS — NOT A FINISHED PRODUCT.**
 > This repository is a construction site published to keep track of experiments
@@ -22,7 +22,7 @@ properties remain Explorer's native ones.
 
 | Component | Runs in | Role |
 |---|---|---|
-| `mod/everything-explorer-search.wh.cpp` | Windhawk mod in `explorer.exe` | replaces the XAML box, writes the request, navigates the view |
+| `mod/everything-search-explorer.wh.cpp` | Windhawk mod in `explorer.exe` | replaces the XAML box, writes the request, navigates the view |
 | `nse/EverythingSearchNse.dll` | in-proc in `explorer.exe` | `IShellFolder` enumerating results as real files |
 | Everything | separate user process | index and search engine (prerequisite) |
 
@@ -33,7 +33,7 @@ so a slow or missing Everything never blocks Explorer.
 ```
 Ctrl+F / XAML box → Enter
         │
-        ├─ mod: writes request-<HWND>.txt  (%LOCALAPPDATA%\EverythingExplorerSearch)
+        ├─ mod: writes request-<HWND>.txt  (%LOCALAPPDATA%\EverythingSearchExplorer)
         └─ mod: BrowseObject / Refresh to shell:::{7B39...4F60}
                         │
                  NSE in explorer.exe ──WM_COPYDATA/QUERY2──▶ Everything.exe
@@ -82,7 +82,7 @@ stays disabled in virtual folders such as "This PC".
 
   This is required because XAML Diagnostics is available only in `/factory`
   processes.
-- Windhawk with the `local@everything-explorer-search` mod enabled.
+- Windhawk with the `local@everything-search-explorer` mod enabled.
 - PowerShell 7+ to run the scripts (`#requires -Version 7.0`); Windows PowerShell
   5.1 is not enough.
 - Everything 1.4.1+ running **non-elevated** (otherwise `explorer.exe` cannot send
@@ -130,7 +130,7 @@ stays disabled in virtual folders such as "This PC".
 
 5. **Build the Windhawk mod**: `.\mod\build-mod.ps1`. On the first run it
    generates the C++/WinRT headers by itself and produces
-   `dist\windhawk\local@everything-explorer-search_0.5.0_<build>.dll`.
+   `dist\windhawk\local@everything-search-explorer_0.5.0_<build>.dll`.
 
 6. **Install the mod**: `.\install-mod.ps1` (asks for admin) or load the DLL from
    Windhawk's panel.
@@ -150,7 +150,7 @@ stays disabled in virtual folders such as "This PC".
 ```
 
 `install-mod.ps1` uses `mod\build-mod.ps1`, which produces
-`dist\windhawk\local@everything-explorer-search_0.5.0_<build>.dll`. The NSE DLL
+`dist\windhawk\local@everything-search-explorer_0.5.0_<build>.dll`. The NSE DLL
 folder is versioned because a DLL already mapped by Explorer cannot be
 overwritten. To remove everything: `.\uninstall-mod.ps1` and `.\uninstall-nse.ps1`.
 
@@ -175,7 +175,7 @@ regeneration:
 .\mod\regenerate-winrt.ps1 -Force
 ```
 
-The mod log goes to `%TEMP%\everything-explorer-search.log`. To inspect a
+The mod log goes to `%TEMP%\everything-search-explorer.log`. To inspect a
 problem, run `.\tools\diagnose.ps1`: it decodes every request file, flags broken
 combinations (such as a scope bit with an empty folder) and shows the related
 log events for the same window. Open problems are tracked in

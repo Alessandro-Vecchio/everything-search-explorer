@@ -12,7 +12,7 @@ component.
 - **Reports**: open an issue with your Windows version, Everything version,
   mod/DLL version and reproduction steps. Do not include logs containing
   private paths or file names: the mod log goes to
-  `%TEMP%\everything-explorer-search.log`.
+  `%TEMP%\everything-search-explorer.log`.
 - The most serious known weaknesses are the use of XAML Diagnostics (an
   unsupported API) and the dependency on Explorer's internal shell contract:
   they are not "security bugs" that can be fixed within the scope of this

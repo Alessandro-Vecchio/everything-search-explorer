@@ -42,7 +42,7 @@ taken when the flyout is built, so it can also be empty.
 **Next step.** Never overwrite a non-empty folder with an empty path; read
 `state->origin` at click time rather than capturing it at flyout construction;
 if the folder is still empty, keep *Current folder* disabled and do not write a
-`parent:""` modifier. Affects `mod/everything-explorer-search.wh.cpp`
+`parent:""` modifier. Affects `mod/everything-search-explorer.wh.cpp`
 (`ApplySearchOptions`, `KeyDown` handler, option flyout).
 
 ---

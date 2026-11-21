@@ -15,11 +15,11 @@ $guid = '{7B39C2A2-3E1F-4E4C-9E58-2D9A7B1C4F60}'
 foreach ($key in @(
         "HKCU:\Software\Classes\CLSID\$guid",
         "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Desktop\NameSpace\$guid",
-        "HKCU:\Software\EverythingExplorerSearch")) {
+        "HKCU:\Software\EverythingSearchExplorer")) {
     if (Test-Path $key) { Remove-Item -Path $key -Recurse -Force }
 }
 
-$root = Join-Path $env:LOCALAPPDATA 'EverythingExplorerSearch'
+$root = Join-Path $env:LOCALAPPDATA 'EverythingSearchExplorer'
 $nse = Join-Path $root 'nse'
 if (Test-Path $nse) {
     try {

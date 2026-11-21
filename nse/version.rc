@@ -24,12 +24,12 @@ BEGIN
     BEGIN
         BLOCK "040904b0"
         BEGIN
-            VALUE "CompanyName", "Everything Search for Explorer"
+            VALUE "CompanyName", "Everything Search Explorer"
             VALUE "FileDescription", "Everything Search namespace extension"
             VALUE "FileVersion", ESX_VER_FILEVERSION_STR
             VALUE "InternalName", "EverythingSearchNse"
             VALUE "OriginalFilename", "EverythingSearchNse.dll"
-            VALUE "ProductName", "Everything Search for Explorer"
+            VALUE "ProductName", "Everything Search Explorer"
             VALUE "ProductVersion", ESX_VER_FILEVERSION_STR
         END
     END

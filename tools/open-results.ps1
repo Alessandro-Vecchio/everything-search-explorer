@@ -17,7 +17,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $guid = '{7B39C2A2-3E1F-4E4C-9E58-2D9A7B1C4F60}'
-$dir = Join-Path $env:LOCALAPPDATA 'EverythingExplorerSearch'
+$dir = Join-Path $env:LOCALAPPDATA 'EverythingSearchExplorer'
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 
 $seq = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() % 4294967296

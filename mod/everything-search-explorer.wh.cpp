@@ -1,6 +1,6 @@
 // ==WindhawkMod==
-// @id              everything-explorer-search
-// @name            Everything Search for Explorer
+// @id              everything-search-explorer
+// @name            Everything Search Explorer
 // @description     Replaces Explorer's native search box in-process with a field backed by Everything.
 // @version         0.5.0
 // @author          Alessandro-Vecchio
@@ -13,7 +13,7 @@
 
 // ==WindhawkModReadme==
 /*
-# Everything Search for Explorer
+# Everything Search Explorer
 
 Replaces Explorer's native search field directly in the XAML tree: no overlay
 window and no second search box. Type a query and press Enter to open the
@@ -527,7 +527,7 @@ void Log(const char* format, ...) {
 
     wchar_t dir[MAX_PATH]{};
     if (!GetTempPathW(MAX_PATH, dir)) return;
-    const std::wstring path = std::wstring(dir) + L"everything-explorer-search.log";
+    const std::wstring path = std::wstring(dir) + L"everything-search-explorer.log";
     // Development diagnostics only: never let the file grow without bound.
     WIN32_FILE_ATTRIBUTE_DATA info{};
     if (GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &info)) {
@@ -3858,7 +3858,7 @@ bool WriteSearchRequest(const std::wstring& query, const std::wstring& folder, H
         return false;
     std::wstring directory = raw;
     CoTaskMemFree(raw);
-    directory += L"\\EverythingExplorerSearch";
+    directory += L"\\EverythingSearchExplorer";
     if (!CreateDirectoryW(directory.c_str(), nullptr) &&
         GetLastError() != ERROR_ALREADY_EXISTS)
         return false;

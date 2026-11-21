@@ -26,7 +26,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$modId        = 'local@everything-explorer-search'
+$modId        = 'local@everything-search-explorer'
 
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $isAdmin = (New-Object Security.Principal.WindowsPrincipal($identity)).IsInRole(

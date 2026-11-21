@@ -2,8 +2,8 @@
 
 ## Status
 
-Official implementation in `mod/everything-explorer-search.wh.cpp` (Windhawk ID
-`local@everything-explorer-search`). Direct replacement of Explorer's native
+Official implementation in `mod/everything-search-explorer.wh.cpp` (Windhawk ID
+`local@everything-search-explorer`). Direct replacement of Explorer's native
 search control, with no Win32 overlay and no `DesktopWindowXamlSource`.
 Verified on `/separate` windows, `Ctrl+N` and windows opened from the taskbar:
 

@@ -14,7 +14,7 @@
          source to C:\ProgramData\Windhawk\ModsSource (so the Windhawk UI edits
          the same code that is installed).
       3. The mod is registered under
-         HKLM\SOFTWARE\Windhawk\Engine\Mods\local@everything-explorer-search
+         HKLM\SOFTWARE\Windhawk\Engine\Mods\local@everything-search-explorer
          with its include/exclude taken from the source metadata, default
          settings, and Disabled=0.
       4. Windhawk is restarted so the new DLL is injected into Explorer.
@@ -27,7 +27,7 @@
     Already compiled mod DLL. Skips compilation.
 
 .PARAMETER SkipBuild
-    Reuse the newest dist\windhawk\local@everything-explorer-search_*.dll
+    Reuse the newest dist\windhawk\local@everything-search-explorer_*.dll
     instead of recompiling.
 
 .PARAMETER NoRestart
@@ -46,9 +46,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$modId        = 'local@everything-explorer-search'
+$modId        = 'local@everything-search-explorer'
 $repoRoot     = $PSScriptRoot
-$source       = Join-Path $repoRoot 'mod\everything-explorer-search.wh.cpp'
+$source       = Join-Path $repoRoot 'mod\everything-search-explorer.wh.cpp'
 
 # --- elevation --------------------------------------------------------------
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()

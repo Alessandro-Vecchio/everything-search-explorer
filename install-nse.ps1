@@ -1,7 +1,7 @@
 <#
     Registers the Everything Search namespace extension for the current user
     and installs the DLL in
-    %LOCALAPPDATA%\EverythingExplorerSearch\nse\<version>\ (the same layout
+    %LOCALAPPDATA%\EverythingSearchExplorer\nse\<version>\ (the same layout
     the mod uses).
 
     No administrator rights required.
@@ -27,7 +27,7 @@ $version = (Select-String -Path (Join-Path $root 'nse\version.h') `
 
 # Versioned folder, same layout the mod uses: a DLL already mapped by Explorer
 # cannot be overwritten in place, so a new build gets a new folder.
-$installDir = Join-Path $env:LOCALAPPDATA "EverythingExplorerSearch\nse\$version"
+$installDir = Join-Path $env:LOCALAPPDATA "EverythingSearchExplorer\nse\$version"
 New-Item -ItemType Directory -Force -Path $installDir | Out-Null
 Copy-Item -Path (Join-Path $src '*') -Destination $installDir -Force
 
@@ -45,7 +45,7 @@ New-Item -Force -Path "$base\ShellFolder" | Out-Null
 Set-ItemProperty -Path "$base\ShellFolder" -Name 'Attributes' -Value 0x20000000 -Type DWord
 
 # Same state the mod writes, so it recognises this installation.
-$state = 'HKCU:\Software\EverythingExplorerSearch'
+$state = 'HKCU:\Software\EverythingSearchExplorer'
 New-Item -Force -Path $state | Out-Null
 Set-ItemProperty -Path $state -Name 'Version' -Value $version
 Set-ItemProperty -Path $state -Name 'Path' -Value $dll

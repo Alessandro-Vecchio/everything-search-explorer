@@ -28,7 +28,7 @@ Explorer navigate to it.
                   ┌───────────────────────────── explorer.exe ─────────────────────────────┐
   search box      │  Windhawk mod (PeekMessageW hook)                                       │
     │             │      ├─ IShellWindows ─▶ IShellBrowser ─▶ location / active view         │
-    │             │      ├─ writes %LOCALAPPDATA%\EverythingExplorerSearch\request.txt       │
+    │             │      ├─ writes %LOCALAPPDATA%\EverythingSearchExplorer\request.txt       │
     │             │      └─ BrowseObject(shell:::{GUID}) or IShellView::Refresh()            │
     │             │                                                                          │
     │             │  EverythingSearchNse.dll  (in-proc COM, STA)                            │
@@ -69,7 +69,7 @@ third-party code loaded into the Explorer process).
 
 ### request.txt
 
-`%LOCALAPPDATA%\EverythingExplorerSearch\request.txt`, UTF-8, one
+`%LOCALAPPDATA%\EverythingSearchExplorer\request.txt`, UTF-8, one
 `key=value` pair per line (split on the **first** `=`):
 
 ```
@@ -172,9 +172,9 @@ The mod cannot carry a binary (it is compiled from source inside Windhawk), so
 the NSE DLL is installed separately with `install-nse.ps1`, which registers the CLSID
 under `HKCU\Software\Classes\CLSID\{GUID}` (with
 `ThreadingModel=Apartment`) and stores version and path in
-`HKCU\Software\EverythingExplorerSearch`. See `README.md` for the commands.
+`HKCU\Software\EverythingSearchExplorer`. See `README.md` for the commands.
 
-The DLL lives in `%LOCALAPPDATA%\EverythingExplorerSearch\nse\<version>\`: a DLL
+The DLL lives in `%LOCALAPPDATA%\EverythingSearchExplorer\nse\<version>\`: a DLL
 already mapped by Explorer cannot be overwritten, so each version has its own
 folder and an update is a fresh copy plus a registry rewrite.
 
@@ -192,7 +192,7 @@ to name the DLL in `dist\windhawk`.
 `install-mod.ps1` closes the loop for development: it builds (or reuses
 `-SkipBuild`), copies the DLL to `Engine\Mods\64`, aligns the source in
 `ModsSource`, writes
-`HKLM\SOFTWARE\Windhawk\Engine\Mods\local@everything-explorer-search` with
+`HKLM\SOFTWARE\Windhawk\Engine\Mods\local@everything-search-explorer` with
 `Include`/`Exclude` taken from the `.wh.cpp` metadata, `Architecture=x86-64`,
 `Disabled=0` and the two default settings (`maxResults=0`,
 `scopeToFolder=1`): without the `Settings` key the engine would read 0 and the
@@ -220,7 +220,7 @@ points, without touching the box text:
 
 The mod's own calls are exempted with `tls_internalNavigation`, otherwise the
 block would also apply to navigation to our virtual folder. `-Trace` builds log
-to `%TEMP%\everything-explorer-search.log` which hook was hit: if a future Windows build uses a
+to `%TEMP%\everything-search-explorer.log` which hook was hit: if a future Windows build uses a
 fourth entry point, the log shows it and it can simply be added.
 
 ## Refresh flow
@@ -282,7 +282,7 @@ involved):
 Verified live in `explorer.exe` (Windows 11 x64, Everything 1.5.0.1423):
 
 - `install-nse.ps1` → DLL loaded from
-  `%LOCALAPPDATA%\EverythingExplorerSearch\nse\<version>\EverythingSearchNse.dll`;
+  `%LOCALAPPDATA%\EverythingSearchExplorer\nse\<version>\EverythingSearchNse.dll`;
 - `shell::{GUID}` opens a window whose view contains the repository's real
   files (read with `Shell.Application`), with no crash or WER events;
 - `IFolderView2::GetViewModeAndIconSize` → `8` (`FVM_CONTENT`);
