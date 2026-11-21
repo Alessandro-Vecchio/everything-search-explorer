@@ -9,7 +9,7 @@
 #include <vector>
 
 #include "everything_ipc.h"
-#include "nse.h"
+#include "folder.h"
 
 namespace bridge {
 namespace {

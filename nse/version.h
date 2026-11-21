@@ -2,7 +2,7 @@
 
 // Single source for the shell component version.
 //
-// Bump these when the DLL changes; install.ps1 uses the version for the
+// Bump these when the DLL changes; install-nse.ps1 uses the version for the
 // per-version install folder and the registry state.
 // The same numbers feed nse/version.rc, so Explorer's file properties agree.
 

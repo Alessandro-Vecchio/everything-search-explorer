@@ -1,7 +1,7 @@
 <#
     Builds everything with MinGW (no MSVC required) and runs the out-of-process
     probe against the namespace extension. Intended for CI/dev machines without
-    Visual Studio; the official build is build.ps1.
+    Visual Studio; the official build is build-nse.ps1.
 #>
 [CmdletBinding()]
 param(

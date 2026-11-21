@@ -169,7 +169,7 @@ item.
 ## Installation
 
 The mod cannot carry a binary (it is compiled from source inside Windhawk), so
-the NSE DLL is installed separately with `install.ps1`, which registers the CLSID
+the NSE DLL is installed separately with `install-nse.ps1`, which registers the CLSID
 under `HKCU\Software\Classes\CLSID\{GUID}` (with
 `ThreadingModel=Apartment`) and stores version and path in
 `HKCU\Software\EverythingExplorerSearch`. See `README.md` for the commands.
@@ -201,7 +201,7 @@ terminated, because the mod is injected into the next window.
 
 `uninstall-mod.ps1` first sets `Disabled=1` (a still-mapped DLL must not be
 reloaded), then removes the key, binaries and source. The shell component stays
-installed: use `uninstall.ps1` for that.
+installed: use `uninstall-nse.ps1` for that.
 
 ## Native search blocking
 
@@ -281,7 +281,7 @@ involved):
 
 Verified live in `explorer.exe` (Windows 11 x64, Everything 1.5.0.1423):
 
-- `install.ps1` → DLL loaded from
+- `install-nse.ps1` → DLL loaded from
   `%LOCALAPPDATA%\EverythingExplorerSearch\nse\<version>\EverythingSearchNse.dll`;
 - `shell::{GUID}` opens a window whose view contains the repository's real
   files (read with `Shell.Application`), with no crash or WER events;
@@ -334,7 +334,7 @@ Bugs found and fixed during this test:
 ## Test checklist
 
 1. `tests/run-mingw.ps1`: does the NSE → IPC → Everything chain work? ✅
-2. `esx.ps1`: does the virtual folder open and show the files? ✅
+2. `open-results.ps1`: does the virtual folder open and show the files? ✅
 3. Context menu on a result: "Open", "Open file location", properties. ✅
    (probe; to be confirmed by hand after the crash fix)
 4. Drag & drop of a result onto another app. ⏳ (formats verified, to be tested

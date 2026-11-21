@@ -18,7 +18,7 @@
 // `Ctrl+F`, `Ctrl+E` and `F3` focus the field; Backspace edits text.
 //
 // Requires Everything 1.4+ running non-elevated and the companion
-// `EverythingSearchNse.dll` namespace extension installed via `install.ps1`.
+// `EverythingSearchNse.dll` namespace extension installed via `install-nse.ps1`.
 // Folder windows must be hosted in separate processes
 // (`HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced\SeparateProcess
 // = 1`): XAML Diagnostics is attached only to `/factory` processes, and the

@@ -21,7 +21,7 @@
 
     Explorer is never terminated: exploring a fresh window is enough for the
     new build to load. The shell component (EverythingSearchNse.dll) is a
-    separate install: .\install.ps1.
+    separate install: .\install-nse.ps1.
 
 .PARAMETER Dll
     Already compiled mod DLL. Skips compilation.
@@ -190,5 +190,5 @@ Write-Host 'Open any Explorer window and press Ctrl+F (Ctrl+Shift+F for setup).'
 if (-not (Test-Path $componentKey)) {
     Write-Host 'The shell component is not registered yet:' -ForegroundColor Yellow
     Write-Host 'download the DLL from the releases page and install it from the panel,'
-    Write-Host 'or run .\install.ps1 (development install from dist\bin).'
+    Write-Host 'or run .\install-nse.ps1 (development install from dist\bin).'
 }

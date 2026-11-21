@@ -23,7 +23,7 @@ if (-not $version) { throw "Could not read ESX_VERSION_STRING from $versionHeade
 
 $source = Join-Path $root "dist\bin\EverythingSearchNse.dll"
 if (-not (Test-Path -LiteralPath $source)) {
-    throw "Missing $source. Run .\build.ps1 first."
+    throw "Missing $source. Run .\build-nse.ps1 first."
 }
 
 $dist = Join-Path $root 'dist'

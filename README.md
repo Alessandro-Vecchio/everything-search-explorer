@@ -121,12 +121,12 @@ stays disabled in virtual folders such as "This PC".
 3. **Build the NSE** (CMake + Ninja, already in the Build Tools):
 
    ```powershell
-   .\build.ps1
+   .\build-nse.ps1
    ```
 
    This produces `dist\bin\EverythingSearchNse.dll`.
 
-4. **Register the NSE**: `.\install.ps1 -RestartExplorer`.
+4. **Register the NSE**: `.\install-nse.ps1 -RestartExplorer`.
 
 5. **Build the Windhawk mod**: `.\mod\build-mod.ps1`. On the first run it
    generates the C++/WinRT headers by itself and produces
@@ -135,7 +135,7 @@ stays disabled in virtual folders such as "This PC".
 6. **Install the mod**: `.\install-mod.ps1` (asks for admin) or load the DLL from
    Windhawk's panel.
 
-7. **Quick check**: `.\tools\esx.ps1 -Query "*.ps1" -Global` opens the results
+7. **Quick check**: `.\tools\open-results.ps1 -Query "*.ps1" -Global` opens the results
    folder without going through the mod. The end-to-end probe
    `.\tests\run-mingw.ps1` requires MinGW-w64: it uses `g++.exe` from `PATH`,
    falls back to `$env:TEMP\mingw\mingw64\bin\g++.exe`, or accepts `-Gcc <path>`.
@@ -143,8 +143,8 @@ stays disabled in virtual folders such as "This PC".
 ## Installation
 
 ```powershell
-.\build.ps1                    # NSE: builds dist\bin\EverythingSearchNse.dll
-.\install.ps1                  # NSE: copies the DLL to %LOCALAPPDATA% and registers the HKCU CLSID
+.\build-nse.ps1                    # NSE: builds dist\bin\EverythingSearchNse.dll
+.\install-nse.ps1                  # NSE: copies the DLL to %LOCALAPPDATA% and registers the HKCU CLSID
 .\mod\build-mod.ps1            # mod: builds the .wh.cpp into dist\windhawk
 .\install-mod.ps1              # mod: registers in HKLM, restarts Windhawk (admin)
 ```
@@ -152,7 +152,7 @@ stays disabled in virtual folders such as "This PC".
 `install-mod.ps1` uses `mod\build-mod.ps1`, which produces
 `dist\windhawk\local@everything-explorer-search_0.5.0_<build>.dll`. The NSE DLL
 folder is versioned because a DLL already mapped by Explorer cannot be
-overwritten. To remove everything: `.\uninstall-mod.ps1` and `.\uninstall.ps1`.
+overwritten. To remove everything: `.\uninstall-mod.ps1` and `.\uninstall-nse.ps1`.
 
 Architecture and protocol details: `docs/DIRECT-XAML-REPLACEMENT.md` and
 `docs/DESIGN.md` (the latter is partly historical: for the current state the
@@ -182,10 +182,10 @@ log events for the same window. Open problems are tracked in
 `docs/KNOWN-ISSUES.md`.
 
 ```powershell
-.\tools\esx.ps1 -Query "invoice" -Folder "C:\Users\<user>\Documents"
+.\tools\open-results.ps1 -Query "invoice" -Folder "C:\Users\<user>\Documents"
 ```
 
-`esx.ps1` writes the request and opens the virtual folder without the mod:
+`open-results.ps1` writes the request and opens the virtual folder without the mod:
 useful for testing the NSE alone.
 
 ## Known limitations / open issues
@@ -227,7 +227,7 @@ nse/                     namespace extension + IPC client
 mod/                     Windhawk mod: XAML replacement of the native bar
 mod/regenerate-winrt.ps1 generates the C++/WinRT headers (not committed)
 tests/                   NSE probes, raw IPC, live menu/view tests
-tools/esx.ps1            test trigger without the mod
+tools/open-results.ps1            test trigger without the mod
 tools/diagnose.ps1       correlates the mod log with per-tab request files
 docs/DEBUGGING.md        crash-test methodology and lessons learned
 docs/KNOWN-ISSUES.md     structured ledger of open problems

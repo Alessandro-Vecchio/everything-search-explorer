@@ -3,8 +3,8 @@
     opens the virtual folder in a new Explorer window.
 
     Example:
-        .\tools\esx.ps1 -Query "fattura" -Folder "C:\Users\<utente>\Documenti"
-        .\tools\esx.ps1 -Query "*.ps1" -Global
+        .\tools\open-results.ps1 -Query "fattura" -Folder "C:\Users\<utente>\Documenti"
+        .\tools\open-results.ps1 -Query "*.ps1" -Global
 #>
 [CmdletBinding()]
 param(

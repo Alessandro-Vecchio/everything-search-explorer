@@ -19,7 +19,7 @@ $root = $PSScriptRoot
 $src = Join-Path $root 'dist\bin'
 
 if (-not (Test-Path (Join-Path $src 'EverythingSearchNse.dll'))) {
-    throw "Missing dist\bin\EverythingSearchNse.dll. Run .\build.ps1 first."
+    throw "Missing dist\bin\EverythingSearchNse.dll. Run .\build-nse.ps1 first."
 }
 
 $version = (Select-String -Path (Join-Path $root 'nse\version.h') `

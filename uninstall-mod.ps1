@@ -7,7 +7,7 @@
 .DESCRIPTION
     Removes the registry entry, the compiled DLLs, the copy of the source in
     ModsSource, and restarts Windhawk. The shell component is left untouched:
-    use .\uninstall.ps1 for that one.
+    use .\uninstall-nse.ps1 for that one.
 
     The mod DLL is mapped by explorer.exe, so Explorer is restarted (unless
     -NoProcessRestart) to release it.

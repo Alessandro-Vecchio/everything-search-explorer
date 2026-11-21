@@ -8,7 +8,7 @@ component.
   download a build from a third party, always verify it.
 - **Do not use in production environments** or on machines with sensitive data
   without first testing uninstall and recovery (`uninstall-mod.ps1`,
-  `uninstall.ps1`).
+  `uninstall-nse.ps1`).
 - **Reports**: open an issue with your Windows version, Everything version,
   mod/DLL version and reproduction steps. Do not include logs containing
   private paths or file names: the mod log goes to

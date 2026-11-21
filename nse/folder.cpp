@@ -1,4 +1,4 @@
-#include "nse.h"
+#include "folder.h"
 
 #include <propvarutil.h>
 #include <propsys.h>

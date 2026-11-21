@@ -120,12 +120,12 @@ limitare la ricerca: dalle cartelle virtuali come "Questo PC" resta disabilitata
 3. **Compila la NSE** (CMake + Ninja, già nei Build Tools):
 
    ```powershell
-   .\build.ps1
+   .\build-nse.ps1
    ```
 
    Produce `dist\bin\EverythingSearchNse.dll`.
 
-4. **Registra la NSE**: `.\install.ps1 -RestartExplorer`.
+4. **Registra la NSE**: `.\install-nse.ps1 -RestartExplorer`.
 
 5. **Compila la mod Windhawk**: `.\mod\build-mod.ps1`. Alla prima esecuzione
    genera da solo le intestazioni C++/WinRT e produce
@@ -134,7 +134,7 @@ limitare la ricerca: dalle cartelle virtuali come "Questo PC" resta disabilitata
 6. **Installa la mod**: `.\install-mod.ps1` (chiede admin) oppure carica la DLL
    dal pannello di Windhawk.
 
-7. **Verifica rapida**: `.\tools\esx.ps1 -Query "*.ps1" -Global` apre la
+7. **Verifica rapida**: `.\tools\open-results.ps1 -Query "*.ps1" -Global` apre la
    cartella risultati senza passare dalla mod. Il probe end-to-end
    `.\tests\run-mingw.ps1` richiede MinGW in
    `$env:TEMP\mingw\mingw64\bin\g++.exe` (percorso passabile con `-Gcc`).
@@ -142,8 +142,8 @@ limitare la ricerca: dalle cartelle virtuali come "Questo PC" resta disabilitata
 ## Installazione
 
 ```powershell
-.\build.ps1                    # NSE: compila dist\bin\EverythingSearchNse.dll
-.\install.ps1                  # NSE: copia la DLL in %LOCALAPPDATA% e registra il CLSID HKCU
+.\build-nse.ps1                    # NSE: compila dist\bin\EverythingSearchNse.dll
+.\install-nse.ps1                  # NSE: copia la DLL in %LOCALAPPDATA% e registra il CLSID HKCU
 .\mod\build-mod.ps1            # mod: compila il .wh.cpp in dist\windhawk
 .\install-mod.ps1              # mod: registra in HKLM, riavvia Windhawk (admin)
 ```
@@ -151,7 +151,7 @@ limitare la ricerca: dalle cartelle virtuali come "Questo PC" resta disabilitata
 `install-mod.ps1` usa `mod\build-mod.ps1`, che produce
 `dist\windhawk\local@everything-explorer-search_0.5.0_<build>.dll`. La cartella
 della DLL NSE è versionata perché una DLL già caricata da Explorer non si può
-sovrascrivere. Per rimuovere tutto: `.\uninstall-mod.ps1` e `.\uninstall.ps1`.
+sovrascrivere. Per rimuovere tutto: `.\uninstall-mod.ps1` e `.\uninstall-nse.ps1`.
 
 Dettagli di architettura e protocollo: `docs/DIRECT-XAML-REPLACEMENT.md` e
 `docs/DESIGN.md` (quest'ultimo è in parte storico: per lo stato attuale prevale
@@ -180,10 +180,10 @@ eventi di log della stessa finestra. I problemi aperti sono registrati in
 `docs/KNOWN-ISSUES.md`.
 
 ```powershell
-.\tools\esx.ps1 -Query "fattura" -Folder "C:\Users\<utente>\Documenti"
+.\tools\open-results.ps1 -Query "fattura" -Folder "C:\Users\<utente>\Documenti"
 ```
 
-`esx.ps1` scrive la request e apre la cartella virtuale senza passare dalla mod:
+`open-results.ps1` scrive la request e apre la cartella virtuale senza passare dalla mod:
 utile per provare la sola NSE.
 
 ## Limiti noti / problemi aperti
@@ -226,7 +226,7 @@ nse/                     namespace extension + client IPC
 mod/                     mod Windhawk: sostituzione XAML della barra nativa
 mod/regenerate-winrt.ps1 genera le intestazioni C++/WinRT (non committate)
 tests/                   probe NSE, IPC grezzo, menu/vista dal vivo
-tools/esx.ps1            trigger di test senza mod
+tools/open-results.ps1            trigger di test senza mod
 tools/diagnose.ps1       correla log della mod e request file per scheda
 docs/DEBUGGING.md        metodologia e lezioni sui test dei crash
 docs/KNOWN-ISSUES.md     registro strutturato dei problemi aperti
