@@ -5,7 +5,7 @@
 // @version         0.5.0
 // @author          Alessandro-Vecchio
 // @github          https://github.com/Alessandro-Vecchio
-// @homepage        https://github.com/Alessandro-Vecchio/everything-explorer-search
+// @homepage        https://github.com/Alessandro-Vecchio/everything-search-explorer
 // @include         explorer.exe
 // @architecture    x86-64
 // @compilerOptions -lole32 -loleaut32 -lshlwapi -lshell32 -lgdi32 -luuid -ladvapi32 -lcomctl32 -ld2d1 -lruntimeobject -lcoremessaging -luiautomationcore -lversion
