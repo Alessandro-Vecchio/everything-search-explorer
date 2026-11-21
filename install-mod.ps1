@@ -8,8 +8,8 @@
     with a UAC prompt when needed.
 
     Steps:
-      1. mod\build-mod.ps1 compiles the .wh.cpp with the clang bundled with
-         Windhawk (skipped with -SkipBuild or when -Dll is passed).
+      1. mod\build-mod.ps1 compiles the .wh.cpp with MSVC x64 (skipped with
+         -SkipBuild or when -Dll is passed).
       2. The DLL is copied to C:\ProgramData\Windhawk\Engine\Mods\64 and the
          source to C:\ProgramData\Windhawk\ModsSource (so the Windhawk UI edits
          the same code that is installed).
@@ -21,7 +21,7 @@
 
     Explorer is never terminated: exploring a fresh window is enough for the
     new build to load. The shell component (EverythingSearchNse.dll) is a
-    separate install: .\install.ps1 or the Ctrl+Shift+F panel.
+    separate install: .\install.ps1.
 
 .PARAMETER Dll
     Already compiled mod DLL. Skips compilation.

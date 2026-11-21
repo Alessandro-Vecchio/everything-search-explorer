@@ -193,11 +193,13 @@ sua cartella e l'aggiornamento è una copia nuova + rewrite della chiave.
 
 ### Build e install da sorgente
 
-La mod si compila anche fuori dall'editor: `mod\build-mod.ps1` usa il clang in
-`C:\Program Files\Windhawk\Compiler` con la stessa riga di comando dell'editor
-(`windhawk.lib` dell'engine attivo, ricavato da `windhawk.ini`,
-`-include windhawk_api.h`, `-DWH_MOD*`) e legge `@version`/`@compilerOptions`
-dal sorgente, così la build non può divergere da quella dell'UI.
+La mod si compila anche fuori dall'editor: `mod\build-mod.ps1` usa MSVC x64 e
+le intestazioni C++/WinRT già generate in `mod\generated`. Individua
+automaticamente `vcvars64.bat` (BuildTools/Enterprise/Professional/Community)
+e la `windhawk.lib` dell'engine Windhawk installato (versione più alta), poi
+passa entrambi i percorsi a `mod\build-mod.cmd` tramite variabili d'ambiente:
+nessun numero di versione è hardcoded. Legge `@version` dal sorgente per
+nominare la DLL in `dist\windhawk`.
 
 `install-mod.ps1` chiude il cerchio per lo sviluppo: compila (o riusa
 `-SkipBuild`), copia la DLL in `Engine\Mods\64`, allinea il sorgente in

@@ -1,10 +1,28 @@
 @echo off
 setlocal
-call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
+
+rem Paths are discovered by build-mod.ps1 and passed through the environment.
+rem The fallbacks below are only for invoking this .cmd directly.
+if defined ESX_VCVARS64 (
+  call "%ESX_VCVARS64%" >nul 2>&1
+) else (
+  call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
+)
 if errorlevel 1 (
   echo vcvars64.bat failed
   exit /b 1
 )
+
+if defined ESX_WINDHAWK_LIB (
+  set "WHLIB=%ESX_WINDHAWK_LIB%"
+) else (
+  set "WHLIB=C:\Program Files\Windhawk\Engine\1.7.3\64\windhawk.lib"
+)
+if not exist "%WHLIB%" (
+  echo windhawk.lib not found: %WHLIB%
+  exit /b 1
+)
+
 set "OUT=%~dp0..\dist\windhawk"
 if not exist "%OUT%" mkdir "%OUT%"
 cl /nologo /std:c++20 /EHsc /LD /utf-8 /O2 /DUNICODE /D_UNICODE /DWH_MOD ^
@@ -16,6 +34,6 @@ cl /nologo /std:c++20 /EHsc /LD /utf-8 /O2 /DUNICODE /D_UNICODE /DWH_MOD ^
    /EXPORT:_Z21Wh_ModSettingsChangedv=Wh_ModSettingsChanged ^
    /EXPORT:InternalWhModPtr,DATA ^
    /EXPORT:DllGetClassObject /EXPORT:DllCanUnloadNow ^
-   "C:\Program Files\Windhawk\Engine\1.7.3\64\windhawk.lib" ^
+   "%WHLIB%" ^
    ole32.lib runtimeobject.lib oleaut32.lib CoreMessaging.lib UIAutomationCore.lib shell32.lib shlwapi.lib comctl32.lib version.lib user32.lib
 exit /b %errorlevel%
