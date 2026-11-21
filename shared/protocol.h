@@ -15,6 +15,7 @@
 #include <knownfolders.h>
 #include <shlobj.h>
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -24,11 +25,14 @@ namespace esx {
 
 inline constexpr wchar_t kDataDirName[] = L"EverythingExplorerSearch";
 inline constexpr wchar_t kRequestFileName[] = L"request.txt";
+inline constexpr wchar_t kWindowRequestPrefix[] = L"request-";
+inline constexpr wchar_t kWindowRequestSuffix[] = L".txt";
 
 // Flags stored in QueryRequest::flags.
 enum QueryFlags : std::uint32_t {
     ScopeToFolder = 1u << 0,
     IncludeFolders = 1u << 1,
+    IncludeSubfolders = 1u << 2,  // path:"..." instead of parent:"..."
 };
 
 struct QueryRequest {
@@ -38,6 +42,8 @@ struct QueryRequest {
     std::uint32_t flags = ScopeToFolder | IncludeFolders;
     std::wstring folder;
     std::wstring query;
+    std::wstring filter;     // Everything modifiers from "Search options"
+    bool contentSearch = false;
 };
 
 struct QueryResultItem {
@@ -92,6 +98,19 @@ inline std::wstring GetRequestFilePath() {
     return dir + L"\\" + kRequestFileName;
 }
 
+// Per-window handoff. The key is the top-level Explorer frame HWND, the same
+// identity the mod uses for its per-window XAML state. Without this, the last
+// search in any window overwrites the single global file and a refresh in an
+// older window adopts the newer query.
+inline std::wstring GetRequestFilePath(HWND frame) {
+    if (!frame) return GetRequestFilePath();
+    const std::wstring dir = GetDataDir();
+    if (dir.empty()) return {};
+    return dir + L"\\" + kWindowRequestPrefix +
+           std::to_wstring(reinterpret_cast<std::uintptr_t>(frame)) +
+           kWindowRequestSuffix;
+}
+
 inline std::string SerializeRequest(const QueryRequest& r) {
     std::string s;
     s += "seq=" + std::to_string(r.seq) + "\n";
@@ -99,6 +118,8 @@ inline std::string SerializeRequest(const QueryRequest& r) {
     s += "flags=" + std::to_string(r.flags) + "\n";
     s += "folder=" + WideToUtf8(r.folder) + "\n";
     s += "query=" + WideToUtf8(r.query) + "\n";
+    s += "filter=" + WideToUtf8(r.filter) + "\n";
+    s += "content=" + std::to_string(r.contentSearch ? 1 : 0) + "\n";
     return s;
 }
 
@@ -125,6 +146,8 @@ inline bool ParseRequest(std::string_view text, QueryRequest& out) {
             else if (key == "flags") r.flags = static_cast<std::uint32_t>(std::strtoul(std::string(value).c_str(), nullptr, 10));
             else if (key == "folder") r.folder = Utf8ToWide(value);
             else if (key == "query") { r.query = Utf8ToWide(value); sawQuery = true; }
+            else if (key == "filter") r.filter = Utf8ToWide(value);
+            else if (key == "content") r.contentSearch = std::strtoul(std::string(value).c_str(), nullptr, 10) != 0;
         }
         pos = eol + 1;
     }
@@ -133,8 +156,7 @@ inline bool ParseRequest(std::string_view text, QueryRequest& out) {
     return sawQuery;
 }
 
-inline bool ReadRequestFile(QueryRequest& out) {
-    const std::wstring path = GetRequestFilePath();
+inline bool ReadRequestFileFrom(const std::wstring& path, QueryRequest& out) {
     if (path.empty()) return false;
     HANDLE h = ::CreateFileW(path.c_str(), GENERIC_READ,
                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
@@ -152,10 +174,16 @@ inline bool ReadRequestFile(QueryRequest& out) {
     return ok && ParseRequest(data, out);
 }
 
-inline bool WriteRequestFile(const QueryRequest& r) {
-    const std::wstring path = GetRequestFilePath();
+inline bool WriteRequestFileTo(const std::wstring& path, const QueryRequest& r) {
     if (path.empty()) return false;
-    const std::wstring tmp = path + L".tmp";
+    // A unique temporary file per writer avoids interleaved writes when two
+    // windows/tabs submit at the same time; the rename below stays atomic and
+    // last-writer-wins. The counter also separates writes from the same thread.
+    static std::atomic<unsigned long long> counter{0};
+    const std::wstring tmp = path + L"." + std::to_wstring(::GetCurrentProcessId()) + L"." +
+                             std::to_wstring(::GetCurrentThreadId()) + L"." +
+                             std::to_wstring(counter.fetch_add(1, std::memory_order_relaxed)) +
+                             L".tmp";
     HANDLE h = ::CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
                              FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) return false;
@@ -166,6 +194,31 @@ inline bool WriteRequestFile(const QueryRequest& r) {
     ::CloseHandle(h);
     if (!ok) return false;
     return ::MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING) != FALSE;
+}
+
+inline bool ReadRequestFile(QueryRequest& out) {
+    return ReadRequestFileFrom(GetRequestFilePath(), out);
+}
+
+// The per-window file wins; the global one is kept only as a fallback for
+// windows opened before per-window handoff existed (or via external tools).
+inline bool ReadRequestForWindow(HWND frame, QueryRequest& out) {
+    if (frame && ReadRequestFileFrom(GetRequestFilePath(frame), out)) return true;
+    return ReadRequestFile(out);
+}
+
+inline bool WriteRequestFile(const QueryRequest& r) {
+    return WriteRequestFileTo(GetRequestFilePath(), r);
+}
+
+// Write both the per-window snapshot and the legacy global file. The global
+// file keeps tools/tests working; the extension never uses it for enumeration
+// when a per-window file is available.
+inline bool WriteRequestForWindow(HWND frame, const QueryRequest& r) {
+    const bool global = WriteRequestFile(r);
+    if (!frame) return global;
+    const bool perWindow = WriteRequestFileTo(GetRequestFilePath(frame), r);
+    return global && perWindow;
 }
 
 }  // namespace esx

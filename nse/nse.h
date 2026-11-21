@@ -12,6 +12,7 @@
 #include <shobjidl.h>
 #include <shlwapi.h>
 #include <shellapi.h>
+#include <servprov.h>
 #include <propkey.h>
 
 #include <atomic>
@@ -116,7 +117,9 @@ bool GetPidlPath(PCUIDLIST_ABSOLUTE pidl, std::wstring& path);
 
 class CFolder final : public IShellFolder2,
                       public IPersistFolder2,
-                      public IShellFolderViewCB {
+                      public IShellFolderViewCB,
+                      public IServiceProvider,
+                      public IExplorerPaneVisibility {
 public:
     static HRESULT Create(REFIID riid, void** ppv);
 
@@ -170,12 +173,30 @@ public:
     // IShellFolderViewCB
     HRESULT STDMETHODCALLTYPE MessageSFVCB(UINT uMsg, WPARAM wParam, LPARAM lParam) override;
 
+    // IServiceProvider / IExplorerPaneVisibility: hide Explorer's legacy
+    // "Organize" band, which has no meaning for a search results folder.
+    HRESULT STDMETHODCALLTYPE QueryService(REFGUID guidService, REFIID riid,
+                                           void** ppv) override;
+    HRESULT STDMETHODCALLTYPE GetPaneState(REFEXPLORERPANE ep,
+                                           EXPLORERPANESTATE* peps) override;
+
     // Lazy enumeration: the first page is loaded by EnumObjects, the rest is
     // fetched on demand while Explorer walks the enumerator.
     bool GetPathAt(size_t index, std::wstring& path) const;
     bool EnsureLoaded(size_t index);
     bool IsIncluded(size_t index, DWORD flags) const;
     std::uint64_t Generation() const { return m_generation.load(); }
+    // Top-level Explorer frame that owns this view. This is the same key the
+    // mod uses for its per-window request snapshot.
+    HWND OwnerFrame() const {
+        if (!m_viewHwnd) return nullptr;
+        for (HWND current = m_viewHwnd; current; current = ::GetParent(current)) {
+            wchar_t className[64]{};
+            if (!::GetClassNameW(current, className, ARRAYSIZE(className))) continue;
+            if (_wcsicmp(className, L"ShellTabWindowClass") == 0) return current;
+        }
+        return ::GetAncestor(m_viewHwnd, GA_ROOT);
+    }
 
 private:
     CFolder() = default;
@@ -194,16 +215,20 @@ private:
     };
 
     void ClearItems();
-    void LoadItemsLocked();
-    void LoadMoreLocked();       // m_mutex must be held
+    // frameHint is the top-level Explorer frame supplied by the shell while
+    // enumerating. It is required because the shell creates a separate CFolder
+    // instance for enumeration, so m_viewHwnd is not available there.
+    void LoadItemsLocked(HWND frameHint = nullptr);
+    bool LoadMore();             // owns m_fetchMutex; IPC runs outside m_mutex
     void AppendPageLocked(const std::vector<esx::QueryResultItem>& page);
     const Item* FindItemLocked(const std::wstring& path) const;
-    std::wstring DisplayNameLocked() const;
+    std::wstring DisplayNameLocked(SHGDNF uFlags) const;
 
     LONG m_ref = 1;
     PIDLIST_ABSOLUTE m_rootPidl = nullptr;
 
     mutable std::mutex m_mutex;
+    std::mutex m_fetchMutex;       // serializes page IPC without holding m_mutex
     std::atomic<std::uint64_t> m_generation{0};
     std::vector<Item> m_items;
     std::unordered_map<std::wstring, size_t> m_index;
@@ -219,9 +244,9 @@ private:
     std::uint32_t m_flags = 0;
     std::wstring m_query;
     std::wstring m_folder;
+    std::wstring m_filter;
+    bool m_contentSearch = false;
 
-    // Commands injected into the view's background menu (SFVM_MERGEMENU).
-    UINT m_cmdBase = 0;
     HWND m_viewHwnd = nullptr;
 };
 

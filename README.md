@@ -1,255 +1,167 @@
 # Everything Search for Explorer
 
+> **⚠️ PROGETTO IN CORSO — NON È UNA VERSIONE FINITA.**
+> Questo repository è uno stato di cantiere pubblicato per tenere traccia delle
+> prove e raccogliere feedback. La mod manipola il visual tree XAML di
+> `explorer.exe` tramite **XAML Diagnostics**, un'API non supportata: un
+> aggiornamento di Windows può romperla in qualsiasi momento. Nessuna garanzia,
+> nessun supporto, nessun auto-update. Usalo a tuo rischio, preferibilmente in una
+> macchina di prova.
+>
+> Questo progetto **non è affiliato né supportato da voidtools**. "Everything" è
+> un marchio di voidtools; qui viene usato solo come motore di ricerca esterno.
+
 Ricerca istantanea con [Everything](https://www.voidtools.com/) **dentro** le
 finestre di Esplora file: la casella di ricerca nativa viene sostituita nel
 visual tree XAML di Explorer, senza overlay e senza finestre aggiuntive. I
-risultati sono una vera cartella servita da una namespace extension COM.
+risultati sono una vera cartella servita da una namespace extension COM, quindi
+icone, menu contestuali, drag & drop e proprietà restano quelli nativi.
 
-Due componenti:
-
-- una **mod Windhawk** (`local@everything-explorer-search`) che inserisce il
-  campo nel posto della barra nativa e passa la query a Everything;
-- una **shell extension** (`EverythingSearchNse.dll`) che mostra i risultati
-  come una cartella di Explorer.
-
-Everything resta obbligatorio: Ã¨ il motore di ricerca, non viene reimplementato.
-
-Stato attuale: **funziona dal vivo in Explorer** su Windows 11 x64. La mod
-sostituisce la barra nativa in circa 1 s dall'apertura della finestra, con
-scope corretto (globale per le cartelle virtuali come "Questo PC"). La catena Ã¨
-verificata dentro `explorer.exe`: cartella virtuale in vista **Contenuto** con
-tipo/dimensione/data, doppio clic che apre il file, drag & drop con `CF_HDROP`
-valido. Vedi `docs/DIRECT-XAML-REPLACEMENT.md` per architettura e limiti.
-
-## Come funziona
-
-```
-Explorer (Ctrl+F / casella di ricerca) - digiti e premi Invio
-    |- mod Windhawk -- ISearchBoxInfo::GetText (in-proc)
-                   `-- scrive request.txt --> naviga a shell:::{GUID}
-                                       |
-                           NSE in explorer.exe
-                                       |  WM_COPYDATA (QUERY2)
-                                       |  su un thread dedicato, con timeout
-                                   Everything.exe
-                                       |
-                              risultati (file + cartelle)
-                                       |
-```
+## Componenti
 
 | Componente | Dove gira | Ruolo |
 |---|---|---|
-| `nse/` | in-proc in `explorer.exe` | `IShellFolder` che enumera i risultati come PIDL di file reali e interroga Everything |
-| `mod/` | mod Windhawk | legge la search box nativa, naviga/aggiorna la vista, installa la DLL |
-| Everything | processo separato | indice e motore di ricerca (prerequisito, dell'utente) |
+| `mod/everything-explorer-search.wh.cpp` | mod Windhawk in `explorer.exe` | sostituisce la casella XAML, scrive la request, naviga la vista |
+| `nse/EverythingSearchNse.dll` | in-proc in `explorer.exe` | `IShellFolder` che enumera i risultati come file reali |
+| Everything | processo separato dell'utente | indice e motore di ricerca (prerequisito) |
 
-Il vantaggio della namespace extension "proxy" Ã¨ che ogni voce Ã¨ un percorso
-reale: icone, menu contestuali, drag & drop, proprietÃ  e "Apri con" sono quelli
-nativi di Explorer, non reimplementati. La vista predefinita Ã¨ **Contenuto**
-(`FVM_CONTENT`) e le colonne leggono le proprietÃ  del file vero
-(`PKEY_ItemTypeText`, `PKEY_Size`, `PKEY_DateModified`).
+L'NSE **non linka né carica `Everything64.dll`**: parla il protocollo IPC
+documentato (`QUERY2` via `WM_COPYDATA`) da un thread dedicato con timeout, così
+un Everything lento o assente non blocca Explorer.
 
-L'estensione **non linka nÃ© carica `Everything64.dll`**: parla direttamente con
-Everything via IPC documentato (`QUERY2` sopra `WM_COPYDATA`) da un thread
-dedicato, con timeout espliciti. CosÃ¬ Everything lento o assente non blocca
-Explorer, e non serve scaricare l'SDK per compilare.
+```
+Ctrl+F / casella XAML → Invio
+        │
+        ├─ mod: scrive request-<HWND>.txt  (%LOCALAPPDATA%\EverythingExplorerSearch)
+        └─ mod: BrowseObject / Refresh su shell:::{7B39...4F60}
+                        │
+                 NSE in explorer.exe ──WM_COPYDATA/QUERY2──▶ Everything.exe
+                        │
+                 risultati = PIDL di file reali nella vista Explorer
+```
 
 ## Come si usa
 
-1. In una finestra di Explorer premi `Ctrl+F` (o clicca la casella di ricerca),
-   digita la query e premi **Invio**.
-2. La finestra passa alla cartella `Everything Search`, che mostra i risultati
-   di Everything con nome, tipo, dimensione e data, **cartelle incluse**, senza
-   limite di 500.
-3. Tasto destro sullo sfondo dei risultati:
-   - **Search optionsâ€¦** apre un piccolo pannello con ambito (cartella corrente
-     / ovunque), inclusione delle cartelle e numero massimo di risultati (`0` =
-     tutti); le modifiche si applicano subito alla vista;
-   - **Close search** torna alla cartella da cui era partita la ricerca.
+1. In una finestra di Explorer premi `Ctrl+F` (o `Ctrl+E` / `F3`) per dare il
+   focus alla casella sostituita.
+2. Digita la query e premi **Invio**: la vista passa alla cartella
+   `Everything Search` con nome, tipo, dimensione e data (cartelle incluse).
+3. Usa il pulsante **Opzioni di ricerca** nella barra dei comandi per filtrare.
+4. **Indietro** torna alla cartella di partenza.
 
-Questi due comandi sostituiscono *Opzioni di ricerca* e *Chiudi ricerca* della
-ricerca nativa: la barra dei comandi della search box appartiene alla vista di
-Windows Search e una namespace extension non puÃ² albergarla.
+La mod mantiene uno stato separato per scheda: testo della casella, caret e
+risultati di una scheda non vengono adottati da un'altra.
 
- La casella di ricerca nativa **non viene usata**: scriverci tramite UIA o tasti
- sintetici fa crashare `Windows.UI.Xaml.dll`, e il testo viene cancellato quando
- cambia la vista. La mod principale mantiene il proprio campo Win32 e il motore
- Everything; quando Ã¨ attivo lo spike XAML, un `TextBox` separato sostituisce
- visivamente il controllo nativo, che viene reso invisibile e non interattivo.
- Invio passa la query al campo Win32 della mod principale, senza inviare testo o
- tasti alla casella XAML originale.
+### Opzioni di ricerca
 
- Lo spike in `xaml-spike/` individua l'`AutoSuggestBox` nativo tramite XAML
- Diagnostics e applica le modifiche sul dispatcher dell'elemento tramite
- `IXamlDiagnosticsTestHooks`. Crea poi un `DesktopWindowXamlSource` sullo stesso
- dispatcher XAML di Explorer. Se non riesce a disattivare il controllo nativo o a
- creare il sostituto, ripristina la casella originale. Il test dal vivo ha
- verificato la sostituzione visiva; il passaggio della query a Everything resta
- da verificare dal vivo. XAML Diagnostics non Ã¨ un'API supportata e puÃ² entrare
- in conflitto con altre mod o con aggiornamenti di Windows.
+Tutte le voci scrivono modificatori Everything nel file di request e vengono
+applicate alla query successiva; non compaiono nella casella di testo.
 
- Con il solo mod principale, `Ctrl+F` dÃ  il focus al suo campo Win32; Invio scrive
- la query in `request.txt` e naviga alla cartella risultati. Con lo spike attivo,
- Invio nel `TextBox` XAML usa lo stesso percorso di ricerca e Escape svuota il
- campo. Testo, caret, selezione e clipboard del campo Win32 restano gestiti da
- Windows.
-
-Mentre si digita, la ricerca di Windows viene **bloccata**: la mod intercetta
-le tre strade che Explorer usa per aprire la vista Windows Search â€”
-`SHParseDisplayName("search-ms:...")` (riportando alla cartella di partenza),
-`ShellExecuteExW`/`ShellExecuteW` con un moniker `search-ms:` e
-`IShellBrowser::BrowseObject` verso la search folder `{04731B67-...}`. La vista
-resta quindi sulla cartella fino a Invio. I navigatori della mod sono
-esentati con un flag `thread_local`, quindi la cartella virtuale si apre
-normalmente. Le build con `-Trace` registrano in `%TEMP%\esx-mod.log` quale
-hook Ã¨ stato colpito, utile se una build futura di Windows apre la ricerca in
-un modo nuovo.
-
-La prima ricerca Ã¨ automaticamente limitata alla cartella che stavate
-guardando; le ricerche successive dalla cartella risultati riutilizzano lo
-stesso ambito. `maxResults=0` (predefinito) restituisce tutti i match fino al
-tetto di sicurezza del componente (98.000); un valore positivo impone un limite
-esplicito.
-
-## Build
-
-Build ufficiale (MSVC x64) + CMake/Ninja:
-
-```powershell
-winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
-.\build.ps1                       # compila in dist\bin
-.\package.ps1                     # dist\EverythingSearchNse-v<versione>.dll + SHA256
-```
-
-Build della mod Windhawk (MSVC x64, con le intestazioni C++/WinRT giÃ  presenti
-in `mod\generated`):
-
-```powershell
-.\mod\build-mod.ps1               # dist\windhawk\local@everything-explorer-search_<ver>_<build>.dll
-```
-
-Il log della mod va in `%TEMP%\everything-explorer-search.log`.
-
-Build di verifica senza MSVC (MinGW), con probe end-to-end:
-
-```powershell
-.\tests\run-mingw.ps1 -Folder C:\Windows -Query *.exe -Max 20
-```
-
-Il probe carica la DLL fuori processo, enumera la cartella virtuale e stampa
-quello che Explorer vedrebbe. Gli altri probe servono per i test dal vivo:
-
-| Probe | Cosa verifica |
+| Voce | Effetto |
 |---|---|
-| `nse_probe.exe` | enumerazione, `GetDetailsOf`/`GetDetailsEx`, menu contestuale, `IDataObject` (`CF_HDROP`, Shell ID List) |
-| `context_menu_probe.exe` | confronto del contratto del menu con quello della shell su un file vero |
-| `navigate_probe.exe` | `BrowseObject` verso la cartella virtuale: stessa finestra o finestra nuova |
-| `view_probe.exe` | vista reale: modalitÃ  Contenuto e azione predefinita (doppio clic) su un risultato |
+| Tutte le sottocartelle | `path:"cartella"` (ricorsivo) |
+| Cartella corrente | `parent:"cartella"` (solo figli diretti) |
+| Data ultima modifica | `date-modified:today` / `7days` / `30days` |
+| Tipologia | `doc:` / `image:` / `video:` / `audio:` |
+| Dimensioni | `size:0` / `size:0..10kb` / `size:10kb..100kb` |
+| File di sistema | `attributes:s` |
+| Cartelle compresse (ZIP) | `zip:` |
+| Contenuto file | `content:<query>` (può essere molto lento) |
+
+`Cartella corrente` è disponibile solo quando esiste una cartella reale a cui
+limitare la ricerca: dalle cartelle virtuali come "Questo PC" resta disabilitata.
+
+## Requisiti
+
+- Windows 11 x64 (unico ambiente provato), Explorer a processi separati:
+
+  ```powershell
+  Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' SeparateProcess 1 -Type DWord
+  ```
+
+  Serve perché XAML Diagnostics è disponibile solo nei processi `/factory`.
+- Windhawk con la mod `local@everything-explorer-search` attiva.
+- Everything 1.4.1+ in esecuzione **senza elevazione** (altrimenti `explorer.exe`
+  non può inviargli `WM_COPYDATA`; usare il servizio Everything).
+- La DLL della namespace extension installata (vedi sotto).
 
 ## Installazione
 
-### Dalla mod (percorso normale)
-
-1. Installa Everything 1.4.1+ e lascialo in esecuzione, **senza** "Run as
-   administrator" (altrimenti Explorer non puÃ² parlargli: usa il servizio
-   Everything e disattiva l'elevazione).
-2. Installa la shell extension con `.\install.ps1` (scrive le chiavi `HKCU`
-   `CLSID\{7B39C2A2-3E1F-4E4C-9E58-2D9A7B1C4F60}` e copia la DLL in
-   `%LOCALAPPDATA%\EverythingExplorerSearch\nse\<versione>\`).
-3. Installa la mod da Windhawk e attivala.
-
-La cartella della DLL Ã¨ versionata perchÃ© una DLL giÃ  caricata da Explorer non
-si puÃ² sovrascrivere: un aggiornamento finisce in una cartella nuova.
-
-### A mano (sviluppo)
-
 ```powershell
-.\install.ps1 -RestartExplorer    # usa dist\bin, HKCU
-.\uninstall.ps1
+.\install.ps1                  # NSE: copia la DLL in %LOCALAPPDATA% e registra il CLSID HKCU
+.\install-mod.ps1              # mod: compila, registra in HKLM, riavvia Windhawk (admin)
 ```
 
-### Mod da sorgente (sviluppo)
+`install-mod.ps1` usa `mod\build-mod.ps1`, che produce
+`dist\windhawk\local@everything-explorer-search_0.5.0_<build>.dll`. La cartella
+della DLL NSE è versionata perché una DLL già caricata da Explorer non si può
+sovrascrivere. Per rimuovere tutto: `.\uninstall-mod.ps1` e `.\uninstall.ps1`.
+
+Dettagli di architettura e protocollo: `docs/DIRECT-XAML-REPLACEMENT.md` e
+`docs/DESIGN.md` (quest'ultimo è in parte storico: per lo stato attuale prevale
+il README e il codice).
+
+## Build e test
 
 ```powershell
-.\install-mod.ps1     # compila, registra, riavvia Windhawk (chiede admin)
-.\uninstall-mod.ps1   # rimuove mod, DLL e sorgente (chiede admin)
+.\mod\build-mod.ps1                          # mod Windhawk (MSVC x64, intestazioni in mod\generated)
+.\tests\run-mingw.ps1 -Folder C:\Windows -Query '*.exe' -Max 20   # NSE senza MSVC + probe end-to-end
 ```
 
-Stessa idea di `install.ps1`, ma per la mod: qui serve l'elevazione perchÃ©
-Windhawk tiene mod e sorgenti in `C:\ProgramData\Windhawk` e la registrazione in
-`HKLM`. Lo script compila il `.wh.cpp` con `mod\build-mod.ps1`, copia la DLL e
-il bootstrapper `Microsoft.WindowsAppRuntime.Bootstrap.dll` in `Engine\Mods\64`,
-allinea il sorgente in `ModsSource`, riscrive la chiave della mod con
-`Disabled=0` e i valori predefiniti (`maxResults`, `scopeToFolder`), poi riavvia
-Windhawk. Explorer non viene terminato: la build nuova entra in una finestra
-successiva. `-SkipBuild` riusa l'ultima DLL in `dist\windhawk`,
-`-NoRestart` lascia Windhawk spento.
-
-PerchÃ© la sostituzione XAML funzioni, le finestre di cartella devono essere
-ospitate in processi separati:
-
-```powershell
-Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' SeparateProcess 1 -Type DWord
-```
-
-### Prima di pubblicare
-
-Aggiorna `nse/version.h` e la versione nel blocco `==WindhawkMod==` di
-`mod/everything-explorer-search.wh.cpp`, poi ricorda che il pannello di setup
-(`Ctrl+Shift+F`) non fa piÃ¹ da downloader: la DLL della shell extension va
-distribuita con il pacchetto.
-
-## Prova senza il mod
+Il log della mod va in `%TEMP%\everything-explorer-search.log`.
 
 ```powershell
 .\tools\esx.ps1 -Query "fattura" -Folder "C:\Users\<utente>\Documenti"
 ```
 
-Scrive `request.txt` e apre una nuova finestra su
-`shell:::{7B39C2A2-3E1F-4E4C-9E58-2D9A7B1C4F60}`.
+`esx.ps1` scrive la request e apre la cartella virtuale senza passare dalla mod:
+utile per provare la sola NSE.
 
-## Limiti noti (v1)
+## Limiti noti / problemi aperti
 
-- Le cartelle compaiono nei risultati, ma la vista Ã¨ piatta e read-only:
-  `BindToObject` non Ã¨ implementato, quindi le cartelle si aprono con il loro
-  verbo predefinito (non navigano dentro la lista piatta).
-- Ogni ricerca ri-enumera la vista e perde la selezione. La ricerca non si
-  aggiorna mentre si digita: serve premere Invio.
-- Il tetto di sicurezza Ã¨ ~98.000 risultati: oltre non ha senso enumerare in una
-  vista Explorer. Per liste molto grandi la vista puÃ² comunque diventare lenta.
-- **Solo x64** (Explorer su Windows 11 Ã¨ x64) e **solo Windows 11 testato**.
-- La ricerca Ã¨ **scoped alla cartella corrente** per impostazione predefinita
-  (modificabile dalla mod o con `esx.ps1 -Global`).
-- Con le **tab** di Windows 11, l'individuazione della vista attiva Ã¨
-  euristica (visibilitÃ  + focus).
-- L'intestazione delle colonne Ã¨ in inglese (localizzazione da fare).
-- Il risultato dipende dall'indice di Everything: file su volumi non indicizzati
-  (o di rete senza folder indexing/ETP) non compaiono.
-- **Aggiornamenti manuali**: nessun auto-update, per scelta. Se Everything non
-  risponde entro i timeout la vista mostra un errore, non si blocca.
-- Se Everything gira elevato, `explorer.exe` (non elevato) non puÃ² inviargli
-  `WM_COPYDATA`: il pannello lo segnala e chiede di togliere l'elevazione.
+Questa è la parte importante: il progetto **non è pronto**.
+
+- **Cartella corrente non è ancora affidabile**: se la seconda ricerca parte
+  dentro la vista risultati, la cartella di origine può andare persa e il
+  modificatore diventa `parent:""` (nessun risultato). Vedi il commento nel
+  codice in `ApplySearchOptions` / handler `KeyDown`.
+- Dopo una seconda ricerca con molti risultati, la nuova lista può comparire
+  solo al termine della ri-enumerazione completa.
+- La barra "Organizza" legacy può ricomparire in cartelle normali della stessa
+  finestra dopo una ricerca.
+- Il titolo della finestra/scheda resta `Everything Search` invece di
+  `<query> - Risultati ricerca in ...` (Explorer non chiama `GetDisplayNameOf`
+  sulla root).
+- L'icona desktop `Everything Search` può ricomparire a intermittenza: sembra un
+  artefatto della cache delle icone, non una vera cartella namespace.
+- Serve `SeparateProcess=1`; con finestre non separate la barra nativa non viene
+  toccata. XAML Diagnostics può entrare in conflitto con altre mod o con
+  aggiornamenti di Windows.
+- Solo x64 / Windows 11. Le cartelle virtuali non hanno percorso filesystem e
+  vengono quindi cercate globalmente.
+- Vista piatta e read-only: `BindToObject` non è implementato, quindi le cartelle
+  nei risultati non navigano dentro la lista.
+- Ogni ricerca ri-enumera e perde la selezione; non c'è aggiornamento live mentre
+  si digita (serve Invio). Tetto di sicurezza ~393.000 risultati grezzi
+  (2048 × 192 batch).
+- Il risultato dipende dall'indice di Everything: volumi non indicizzati e
+  condivisioni di rete senza folder indexing/ETP non compaiono.
+- Nessun auto-update, nessuna firma digitale, nessun supporto.
 
 ## Struttura
 
 ```
-shared/protocol.h        formato request.txt (mod â†” NSE)
-shared/everything_ipc.h  definizioni minime del protocollo IPC QUERY2
+shared/protocol.h        formato request (mod ↔ NSE), flag e filtri
+shared/everything_ipc.h  definizioni minime del protocollo QUERY2
 nse/                     namespace extension + client IPC
 mod/                     mod Windhawk: sostituzione XAML della barra nativa
-mod/build-mod.ps1        compila la mod con MSVC x64 (wrapper di build-mod.cmd)
-mod/generated/           intestazioni C++/WinRT generate, richieste dal build
-install-mod.ps1          installa la mod in HKLM (chiede admin)
-uninstall-mod.ps1        rimuove la mod
+mod/generated/           intestazioni C++/WinRT generate, richieste dal build MSVC
 tests/                   probe NSE, IPC grezzo, menu/vista dal vivo
 tools/esx.ps1            trigger di test senza mod
-docs/DESIGN.md           dettagli di protocollo, PIDL, refresh, roadmap
+docs/                    note di progetto e indagine sui crash
 ```
 
-## Prima di andare avanti
+## Licenza
 
-La parte fragile non Ã¨ Everything, Ã¨ il contratto shell. Prima di aggiungere
-feature, valida con `ShellExView`/`Process Monitor` che Explorer non stia
-chiamando `BindToObject`, `ParseDisplayName` o
-`GetDisplayNameOf(SHGDN_FORPARSING)` in modi inattesi: Ã¨ lÃ¬ che si nascondono i
-crash.
+MIT — vedi `LICENSE`. Il codice generato in `mod/generated/` e le intestazioni
+Windhawk restano di rispettivi proprietari; i relativi avvisi sono nei file.

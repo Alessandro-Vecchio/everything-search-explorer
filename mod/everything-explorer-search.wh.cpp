@@ -72,14 +72,17 @@
 #include "winrt/Microsoft.UI.Dispatching.h"
 #include "winrt/Microsoft.UI.Xaml.h"
 #include "winrt/Microsoft.UI.Xaml.Controls.h"
+#include "winrt/Microsoft.UI.Xaml.Controls.Primitives.h"
 #include "winrt/Microsoft.UI.Xaml.Hosting.h"
 #include "winrt/Microsoft.UI.Xaml.Input.h"
 #include "winrt/Microsoft.UI.Xaml.Media.h"
 #include "winrt/Windows.Foundation.h"
+#include "winrt/Windows.Foundation.Collections.h"
 #include "winrt/Windows.Graphics.h"
 #include "winrt/Windows.System.h"
 
 #include "windhawk_api.h"
+#include "../shared/protocol.h"
 
 namespace {
 
@@ -123,8 +126,14 @@ enum class WindowPhase : int {
     Failed = 9
 };
 
+static HWND ActiveTabWindow(HWND frame);
+static HWND TabWindowForRect(HWND frame, const RECT& rect);
+static HWND TabWindowForThread(DWORD pid, DWORD threadId);
+
 struct WindowState {
     HWND frame = nullptr;
+    HWND tab = nullptr;  // per-tab identity (ShellTabWindowClass)
+    std::wstring queryText;  // last query submitted from this tab
     DWORD pid = 0;
     uint64_t generation = 0;
     winrt::com_ptr<VisualTreeWatcher> watcher;
@@ -152,13 +161,39 @@ struct WindowState {
     std::atomic<bool> c2Running{false};
     std::atomic<bool> textHasFocus{false};
     std::atomic<bool> mutating{false};
+    std::atomic<bool> ignoreNextEmpty{false};
+    std::atomic<bool> closingSearch{false};
     winrt::agile_ref<winrt::Microsoft::UI::Dispatching::DispatcherQueue> dispatcher;
+
+    // Search command-bar button (created together with the replacement box).
+    winrt::Microsoft::UI::Xaml::Controls::AppBarButton optionsButton{nullptr};
+    InstanceHandle optionsButtonHandle = 0;
+    std::atomic<bool> commandBarAdded{false};
+    std::atomic<bool> buttonsVisible{false};
+    std::atomic<ULONGLONG> lastButtonCheck{0};
 };
 
 std::unordered_map<HWND, std::shared_ptr<WindowState>> g_windowStates;
 std::unordered_map<InstanceHandle, std::shared_ptr<WindowState>> g_xamlPending;
 std::mutex g_windowStatesMutex;
 std::atomic<uint64_t> g_windowGeneration{1};
+
+// Explorer has a single XAML search box per window, shared by all its tabs.
+// Keep the typed query per tab and swap it when the active tab changes.
+std::mutex g_tabTextMutex;
+std::unordered_map<HWND, std::wstring> g_tabText;
+std::unordered_map<HWND, HWND> g_frameLastTab;
+
+void SaveTabText(HWND tab, const std::wstring& text) {
+    std::lock_guard<std::mutex> guard(g_tabTextMutex);
+    g_tabText[tab] = text;
+}
+
+std::wstring LoadTabText(HWND tab) {
+    std::lock_guard<std::mutex> guard(g_tabTextMutex);
+    const auto it = g_tabText.find(tab);
+    return it != g_tabText.end() ? it->second : std::wstring();
+}
 
 // Per-window probe slots, keyed by the native XAML handle. No single global
 // slot is used to create controls for different windows.
@@ -185,21 +220,37 @@ void CorrelateWindowStates() {
     std::lock_guard<std::mutex> guard(g_windowStatesMutex);
     for (auto it = g_xamlPending.begin(); it != g_xamlPending.end();) {
         auto pending = it->second;
+        // Tabs share frame, thread and screen rectangle. The tab captured when
+        // the search box was first observed is the reliable discriminator;
+        // the thread lookup is only a fallback for states created elsewhere.
+        const HWND tab = pending->tab ? pending->tab
+                                      : TabWindowForThread(pending->pid, pending->threadId);
         std::vector<std::shared_ptr<WindowState>> candidates;
         for (const auto& item : g_windowStates) {
             auto state = item.second;
             if (state->pid == pending->pid && state->uiaDiscovered &&
-                !state->xamlMapped) {
+                !state->xamlMapped && (!tab || state->tab == tab)) {
                 candidates.push_back(state);
             }
         }
-        if (candidates.empty()) {
-            // UIA can take a few hundred ms to expose the search box. The XAML
-            // diagnostics callback runs on the frame's own UI thread, so a
-            // single visible CabinetWClass window on that exact thread is
-            // unambiguous evidence of which frame owns this native element.
-            // If there is any ambiguity, wait for the UIA-discovered state and
-            // leave the native bar untouched.
+        if (candidates.empty() && tab) {
+            const HWND frame = ::GetAncestor(tab, GA_ROOT);
+            auto& state = g_windowStates[tab];
+            if (!state) {
+                state = std::make_shared<WindowState>();
+                state->frame = frame;
+                state->tab = tab;
+                state->pid = pending->pid;
+                state->threadId = pending->threadId;
+                state->generation = g_windowGeneration.fetch_add(1);
+                state->uiaDiscovered = true;
+                state->phase = WindowPhase::Discovered;
+            }
+            if (!state->xamlMapped) candidates.push_back(state);
+        }
+        if (candidates.empty() && !tab) {
+            // No tab could be resolved from the thread: fall back to the old
+            // thread/frame heuristic and leave the bar untouched if ambiguous.
             ThreadFrameLookup lookup{pending->pid, pending->threadId, {}};
             EnumWindows(
                 [](HWND hwnd, LPARAM parameter) -> BOOL {
@@ -222,10 +273,13 @@ void CorrelateWindowStates() {
                 reinterpret_cast<LPARAM>(&lookup));
             if (lookup.frames.size() == 1) {
                 const HWND frame = lookup.frames.front();
-                auto& state = g_windowStates[frame];
+                const HWND frameTab = ActiveTabWindow(frame);
+                const HWND key = frameTab ? frameTab : frame;
+                auto& state = g_windowStates[key];
                 if (!state) {
                     state = std::make_shared<WindowState>();
                     state->frame = frame;
+                    state->tab = key;
                     state->pid = pending->pid;
                     state->threadId = pending->threadId;
                     state->generation = g_windowGeneration.fetch_add(1);
@@ -252,6 +306,7 @@ void CorrelateWindowStates() {
             continue;
         }
         auto target = candidates.front();
+        if (tab) target->tab = tab;
         target->xamlMapped = true;
         target->phase = WindowPhase::XamlMapped;
         target->nativeHandle = pending->nativeHandle;
@@ -265,10 +320,10 @@ void CorrelateWindowStates() {
                 pending->nativeHandle));
             if (pit != g_probeByHandle.end()) target->probe = pit->second;
         }
-        Log("WINDOW correlated frame=%p pid=%lu gen=%llu native=%llu index=%u "
-            "source=%s",
-            target->frame, target->pid,
-            static_cast<unsigned long long>(target->generation),
+        Log("WINDOW correlated frame=%p tab=%p pid=%lu tid=%lu gen=%llu native=%llu "
+            "index=%u source=%s",
+            target->frame, static_cast<void*>(target->tab), target->pid,
+            pending->threadId, static_cast<unsigned long long>(target->generation),
             static_cast<unsigned long long>(target->nativeHandle),
             target->nativeIndex, target->uiaDiscovered ? "uia" : "thread");
         it = g_xamlPending.erase(it);
@@ -443,10 +498,12 @@ std::atomic<bool> g_directTextHasFocus{false};
 std::wstring g_origin;
 RECT g_nativeRect{0, 0, 0, 0};
 
-bool WriteSearchRequest(const std::wstring& query, const std::wstring& folder);
+bool WriteSearchRequest(const std::wstring& query, const std::wstring& folder, HWND frame);
 bool IsResultsFolder(HWND frame);
 std::wstring CurrentFolderPath(HWND frame);
 void NavigateToResults(HWND frame);
+bool GetBrowserForWindow(HWND frame, winrt::com_ptr<IShellBrowser>& browser);
+static HWND ActiveTabWindow(HWND frame);
 
 struct ObservedSearchBox;
 void RecordObservedBox(uintptr_t watcher, const ParentChildRelation& relation,
@@ -468,6 +525,17 @@ void Log(const char* format, ...) {
     wchar_t dir[MAX_PATH]{};
     if (!GetTempPathW(MAX_PATH, dir)) return;
     const std::wstring path = std::wstring(dir) + L"everything-explorer-search.log";
+    // Development diagnostics only: never let the file grow without bound.
+    WIN32_FILE_ATTRIBUTE_DATA info{};
+    if (GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &info)) {
+        const ULONGLONG size =
+            (static_cast<ULONGLONG>(info.nFileSizeHigh) << 32) | info.nFileSizeLow;
+        if (size > 4ULL * 1024 * 1024) {
+            HANDLE reset = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr,
+                                       CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (reset != INVALID_HANDLE_VALUE) CloseHandle(reset);
+        }
+    }
     HANDLE file = CreateFileW(path.c_str(), FILE_APPEND_DATA,
                               FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
                               OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -945,10 +1013,15 @@ public:
         }
         if (m_channelReadyEvent) CloseHandle(m_channelReadyEvent);
         StopThreads();
-        if (m_executorReadyEvent) CloseHandle(m_executorReadyEvent);
-        if (m_executorStopEvent) CloseHandle(m_executorStopEvent);
-        if (m_adviseCompleteEvent) CloseHandle(m_adviseCompleteEvent);
-        if (m_searchFoundEvent) CloseHandle(m_searchFoundEvent);
+        // Only close events that no live thread can still signal/wait on.
+        if (m_executorStopped) {
+            if (m_executorReadyEvent) CloseHandle(m_executorReadyEvent);
+            if (m_executorStopEvent) CloseHandle(m_executorStopEvent);
+        }
+        if (m_adviseStopped) {
+            if (m_adviseCompleteEvent) CloseHandle(m_adviseCompleteEvent);
+            if (m_searchFoundEvent) CloseHandle(m_searchFoundEvent);
+        }
     }
 
     HRESULT StartAdvise() {
@@ -1201,6 +1274,8 @@ public:
     // destructor (which may never run while XAML still holds a reference).
     void StopThreads() noexcept {
         const DWORD self = GetCurrentThreadId();
+        m_executorStopped = true;
+        m_adviseStopped = true;
 
         if (m_executorThreadId) {
             PostThreadMessageW(m_executorThreadId, WM_QUIT, 0, 0);
@@ -1214,6 +1289,8 @@ public:
                 CloseHandle(m_executorThread);
                 m_executorThread = nullptr;
                 m_executorThreadId = 0;
+            } else {
+                m_executorStopped = false;
             }
         }
 
@@ -1223,6 +1300,8 @@ public:
             if (wait == WAIT_OBJECT_0) {
                 CloseHandle(m_adviseThread);
                 m_adviseThread = nullptr;
+            } else {
+                m_adviseStopped = false;
             }
         }
     }
@@ -1743,6 +1822,8 @@ private:
     winrt::com_ptr<IStream> m_serviceStream;
     winrt::com_ptr<IVisualTreeService3> m_serviceProxy;
     HANDLE m_executorThread = nullptr;
+    bool m_executorStopped = true;
+    bool m_adviseStopped = true;
     DWORD m_executorThreadId = 0;
     DWORD m_ownerThreadId = 0;
     HANDLE m_executorReadyEvent = nullptr;
@@ -2606,6 +2687,10 @@ void RecordObservedBox(uintptr_t watcher, const ParentChildRelation& relation,
         if (!state) {
             state = std::make_shared<WindowState>();
             state->pid = key.pid;
+            // The tab that owns a newly added search box is the active one:
+            // its ShellTabWindowClass is the first visible tab of the frame.
+            const HWND foreground = ::GetForegroundWindow();
+            state->tab = ActiveTabWindow(foreground);
             state->generation = g_windowGeneration.fetch_add(1);
             state->xamlMapped = true;
             state->phase = WindowPhase::XamlMapped;
@@ -2656,10 +2741,13 @@ void RecordUiaDiscovered(HWND frame, const RECT& rect) {
     g_observedBoxes.emplace(key, std::move(box));
     {
         std::lock_guard<std::mutex> guard(g_windowStatesMutex);
-        auto& state = g_windowStates[frame];
+        const HWND tab = TabWindowForRect(frame, rect);
+        const HWND key = tab ? tab : frame;
+        auto& state = g_windowStates[key];
         if (!state) {
             state = std::make_shared<WindowState>();
             state->frame = frame;
+            state->tab = key;
             state->pid = pid;
             state->threadId = GetWindowThreadProcessId(frame, nullptr);
             state->generation = g_windowGeneration.fetch_add(1);
@@ -2702,6 +2790,353 @@ InstanceHandle g_experimentElement = 0;
 InstanceHandle g_experimentParent = 0;
 unsigned g_experimentIndex = 0;
 bool g_addAttempted = false;
+
+// ------------------------------------------------ search command-bar buttons
+
+static void CloseSearchForFrame(HWND frame, const std::shared_ptr<WindowState>& state) {
+    if (state && state->closingSearch.exchange(true)) return;
+    std::wstring origin = state ? state->origin : std::wstring();
+    if (origin.empty()) {
+        esx::QueryRequest request{};
+        if (esx::ReadRequestForWindow(frame, request)) origin = request.folder;
+    }
+    if (origin.empty()) origin = L"shell:MyComputerFolder";
+
+    PIDLIST_ABSOLUTE pidl = nullptr;
+    const HRESULT parseHr = SHParseDisplayName(origin.c_str(), nullptr, &pidl, 0, nullptr);
+    if (FAILED(parseHr) || !pidl) {
+        Log("close search: cannot parse origin='%ls' hr=0x%08X", origin.c_str(), parseHr);
+        if (state) state->closingSearch.store(false);
+        return;
+    }
+    winrt::com_ptr<IShellBrowser> browser;
+    if (GetBrowserForWindow(frame, browser) && browser) {
+        const HRESULT hr = browser->BrowseObject(pidl, SBSP_ABSOLUTE | SBSP_SAMEBROWSER);
+        Log("close search frame=%p origin='%ls' hr=0x%08X", frame, origin.c_str(), hr);
+    }
+    if (state) state->closingSearch.store(false);
+    ::CoTaskMemFree(pidl);
+}
+
+static winrt::Microsoft::UI::Xaml::DependencyObject FindRootVisual(
+    winrt::Microsoft::UI::Xaml::DependencyObject element) {
+    auto current = element;
+    for (int guard = 0; guard < 64 && current; ++guard) {
+        auto parent = winrt::Microsoft::UI::Xaml::Media::VisualTreeHelper::GetParent(current);
+        if (!parent) break;
+        current = parent;
+    }
+    return current;
+}
+
+template <typename T>
+static T FindDescendant(winrt::Microsoft::UI::Xaml::DependencyObject root, int depth = 0) {
+    if (!root || depth > 10) return nullptr;
+    if (auto typed = root.try_as<T>()) return typed;
+    const int count = winrt::Microsoft::UI::Xaml::Media::VisualTreeHelper::GetChildrenCount(root);
+    for (int i = 0; i < count; ++i) {
+        auto child = winrt::Microsoft::UI::Xaml::Media::VisualTreeHelper::GetChild(root, i);
+        if (auto found = FindDescendant<T>(child, depth + 1)) return found;
+    }
+    return nullptr;
+}
+
+template <typename T>
+static void CollectDescendants(winrt::Microsoft::UI::Xaml::DependencyObject root,
+                               std::vector<T>& out, int depth = 0) {
+    if (!root || depth > 10) return;
+    if (auto typed = root.try_as<T>()) out.push_back(typed);
+    const int count = winrt::Microsoft::UI::Xaml::Media::VisualTreeHelper::GetChildrenCount(root);
+    for (int i = 0; i < count; ++i) {
+        CollectDescendants<T>(
+            winrt::Microsoft::UI::Xaml::Media::VisualTreeHelper::GetChild(root, i), out,
+            depth + 1);
+    }
+}
+
+static HWND RequestKeyForFrame(HWND frame) {
+    const HWND tab = ActiveTabWindow(frame);
+    return tab ? tab : frame;
+}
+
+static bool HasFilterToken(const std::wstring& filter, const wchar_t* token) {
+    if (!token || !*token) return false;
+    std::size_t pos = 0;
+    while (pos < filter.size()) {
+        while (pos < filter.size() && filter[pos] == L' ') ++pos;
+        const std::size_t start = pos;
+        while (pos < filter.size() && filter[pos] != L' ') ++pos;
+        if (pos > start && _wcsicmp(filter.substr(start, pos - start).c_str(), token) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static std::wstring WithFilterToken(const std::wstring& filter, const wchar_t* token, bool add) {
+    std::vector<std::wstring> tokens;
+    std::size_t pos = 0;
+    while (pos < filter.size()) {
+        while (pos < filter.size() && filter[pos] == L' ') ++pos;
+        const std::size_t start = pos;
+        while (pos < filter.size() && filter[pos] != L' ') ++pos;
+        if (pos > start) {
+            const std::wstring value = filter.substr(start, pos - start);
+            if (!token || !*token || _wcsicmp(value.c_str(), token) != 0) {
+                tokens.push_back(value);
+            }
+        }
+    }
+    if (add && token && *token) tokens.emplace_back(token);
+    std::wstring result;
+    for (const auto& value : tokens) {
+        if (!result.empty()) result += L' ';
+        result += value;
+    }
+    return result;
+}
+
+struct MenuEntry {
+    const wchar_t* label;
+    const wchar_t* token;  // nullptr means "any"/clear the group
+};
+
+static void ApplySearchOptions(HWND frame, DWORD flags, DWORD maxResults,
+                               const std::wstring& filter, bool contentSearch,
+                               const std::wstring& folderFallback = std::wstring()) {
+    // The command-bar button is created per window, but the request file must
+    // be keyed by the tab that is active when the option is changed.
+    const HWND key = RequestKeyForFrame(frame);
+    esx::QueryRequest request{};
+    if (!esx::ReadRequestForWindow(key, request)) {
+        request.flags = esx::ScopeToFolder | esx::IncludeFolders;
+    }
+    if (request.folder.empty()) request.folder = folderFallback;
+    request.flags = flags;
+    request.maxResults = maxResults;
+    request.filter = filter;
+    request.contentSearch = contentSearch;
+    request.seq = ::GetTickCount();
+    if (!esx::WriteRequestForWindow(key, request)) {
+        Log("options: could not write request for key=%p", key);
+        return;
+    }
+
+    PIDLIST_ABSOLUTE pidl = nullptr;
+    const HRESULT hr = SHParseDisplayName(
+        L"shell:::{7B39C2A2-3E1F-4E4C-9E58-2D9A7B1C4F60}", nullptr, &pidl, 0, nullptr);
+    if (SUCCEEDED(hr) && pidl) {
+        SHChangeNotify(SHCNE_UPDATEDIR, SHCNF_IDLIST | SHCNF_FLUSHNOWAIT, pidl, nullptr);
+        ::CoTaskMemFree(pidl);
+    }
+    Log("options applied frame=%p key=%p flags=0x%lX max=%lu filter='%ls' content=%d",
+        frame, key, flags, maxResults, filter.c_str(), contentSearch ? 1 : 0);
+}
+
+static HRESULT AddSearchCommandBarButtons(IXamlDiagnostics* diagnostics,
+                                          IVisualTreeService3* service,
+                                          const std::shared_ptr<WindowState>& state,
+                                          HWND frame,
+                                          winrt::Microsoft::UI::Xaml::DependencyObject const& element) {
+    if (!diagnostics || !service || !state || state->commandBarAdded) return S_FALSE;
+
+    auto root = FindRootVisual(element);
+    std::vector<winrt::Microsoft::UI::Xaml::Controls::CommandBar> bars;
+    CollectDescendants<winrt::Microsoft::UI::Xaml::Controls::CommandBar>(root, bars);
+    if (bars.empty()) {
+        Log("search buttons: CommandBar not found");
+        return HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
+    }
+
+    // There are two command bars in the window (tab strip and folder commands).
+    // Pick the one that contains "Visualizza" so the button lands next to it.
+    auto commandBar = bars.back();
+    unsigned insertAt = 0;
+    for (auto bar : bars) {
+        auto commands = bar.PrimaryCommands();
+        const unsigned count = commands.Size();
+        for (unsigned i = 0; i < count; ++i) {
+            auto candidate = commands.GetAt(i);
+            if (auto button =
+                    candidate.try_as<winrt::Microsoft::UI::Xaml::Controls::AppBarButton>()) {
+                const std::wstring label(button.Label().c_str());
+                if (label.find(L"Visualizza") != std::wstring::npos ||
+                    label.find(L"View") != std::wstring::npos ||
+                    label.find(L"Ordina") != std::wstring::npos ||
+                    label.find(L"Sort") != std::wstring::npos) {
+                    commandBar = bar;
+                    insertAt = i + 1;
+                    break;
+                }
+            }
+        }
+    }
+
+    auto primary = commandBar.PrimaryCommands();
+    // Place the button before the separator that follows "Visualizza".
+    const unsigned primarySize = primary.Size();
+    for (unsigned i = insertAt; i < primarySize; ++i) {
+        if (primary.GetAt(i).try_as<winrt::Microsoft::UI::Xaml::Controls::AppBarSeparator>()) {
+            insertAt = i;
+            break;
+        }
+    }
+
+    winrt::com_ptr<::IInspectable> rawPrimary = primary.as<::IInspectable>();
+    InstanceHandle barCollection = 0;
+    HRESULT hr = diagnostics->RegisterInstance(rawPrimary.get(), &barCollection);
+    Log("search buttons bar collection hr=0x%08X handle=%llu index=%u",
+        static_cast<unsigned long>(hr), static_cast<unsigned long long>(barCollection), insertAt);
+    if (FAILED(hr) || !barCollection) return hr;
+
+    esx::QueryRequest request{};
+    esx::ReadRequestForWindow(RequestKeyForFrame(frame), request);
+    // A search started from a virtual folder has no folder in the request; the
+    // per-window state still remembers the folder it originated from.
+    const std::wstring originFallback =
+        (state && !state->origin.empty()) ? state->origin : std::wstring();
+    if (request.folder.empty()) request.folder = originFallback;
+
+    auto options = winrt::Microsoft::UI::Xaml::Controls::AppBarButton();
+    options.Label(L"Opzioni di ricerca");
+    auto flyout = winrt::Microsoft::UI::Xaml::Controls::MenuFlyout();
+    flyout.Placement(
+        winrt::Microsoft::UI::Xaml::Controls::Primitives::FlyoutPlacementMode::Bottom);
+
+    auto glyph = [](wchar_t const* text) {
+        auto icon = winrt::Microsoft::UI::Xaml::Controls::FontIcon();
+        icon.Glyph(text);
+        return icon;
+    };
+
+    auto allSubfolders = winrt::Microsoft::UI::Xaml::Controls::MenuFlyoutItem();
+    allSubfolders.Text(L"Tutte le sottocartelle");
+    allSubfolders.Icon(glyph(L"\uE8B7"));
+    allSubfolders.Click([frame, originFallback](auto const&, auto const&) {
+        esx::QueryRequest current{};
+        esx::ReadRequestForWindow(RequestKeyForFrame(frame), current);
+        const DWORD flags = current.flags |
+                            static_cast<DWORD>(esx::ScopeToFolder) |
+                            static_cast<DWORD>(esx::IncludeSubfolders);
+        ApplySearchOptions(frame, flags, current.maxResults, current.filter,
+                           current.contentSearch, originFallback);
+    });
+    flyout.Items().Append(allSubfolders);
+
+    auto currentFolder = winrt::Microsoft::UI::Xaml::Controls::MenuFlyoutItem();
+    currentFolder.Text(L"Cartella corrente");
+    currentFolder.Icon(glyph(L"\uE8B7"));
+    currentFolder.IsEnabled(!request.folder.empty());
+    currentFolder.Click([frame, originFallback](auto const&, auto const&) {
+        esx::QueryRequest current{};
+        esx::ReadRequestForWindow(RequestKeyForFrame(frame), current);
+        const DWORD flags =
+            (current.flags | static_cast<DWORD>(esx::ScopeToFolder)) &
+            ~static_cast<DWORD>(esx::IncludeSubfolders);
+        ApplySearchOptions(frame, flags, current.maxResults, current.filter,
+                           current.contentSearch, originFallback);
+    });
+    flyout.Items().Append(currentFolder);
+    flyout.Items().Append(winrt::Microsoft::UI::Xaml::Controls::MenuFlyoutSeparator());
+
+    auto addSubmenu = [&](wchar_t const* text, wchar_t const* iconGlyph,
+                          std::initializer_list<MenuEntry> entries) {
+        auto sub = winrt::Microsoft::UI::Xaml::Controls::MenuFlyoutSubItem();
+        sub.Text(text);
+        sub.Icon(glyph(iconGlyph));
+        std::vector<std::wstring> group;
+        for (const auto& entry : entries) {
+            if (entry.token) group.emplace_back(entry.token);
+        }
+        for (const auto& entry : entries) {
+            auto item = winrt::Microsoft::UI::Xaml::Controls::MenuFlyoutItem();
+            item.Text(entry.label);
+            const std::wstring selected = entry.token ? entry.token : L"";
+            const std::vector<std::wstring> tokens = group;
+            item.Click([frame, originFallback, tokens, selected](auto const&, auto const&) {
+                esx::QueryRequest current{};
+                esx::ReadRequestForWindow(RequestKeyForFrame(frame), current);
+                std::wstring filter = current.filter;
+                for (const auto& token : tokens) {
+                    filter = WithFilterToken(filter, token.c_str(), false);
+                }
+                if (!selected.empty()) {
+                    filter = WithFilterToken(filter, selected.c_str(), true);
+                }
+                ApplySearchOptions(frame, current.flags, current.maxResults, filter,
+                                   current.contentSearch, originFallback);
+            });
+            sub.Items().Append(item);
+        }
+        flyout.Items().Append(sub);
+    };
+    addSubmenu(L"Data ultima modifica", L"\uE787",
+               {{L"Qualsiasi ora", nullptr},
+                {L"Oggi", L"date-modified:today"},
+                {L"Ultimi 7 giorni", L"date-modified:7days"},
+                {L"Ultimo mese", L"date-modified:30days"}});
+    addSubmenu(L"Tipologia", L"\uE8A5",
+               {{L"Tutte le tipologie", nullptr},
+                {L"Documenti", L"doc:"},
+                {L"Immagini", L"image:"},
+                {L"Video", L"video:"},
+                {L"Audio", L"audio:"}});
+    addSubmenu(L"Dimensioni", L"\uE8B4",
+               {{L"Qualsiasi dimensione", nullptr},
+                {L"Vuoto (0 byte)", L"size:0"},
+                {L"Molto piccolo (0 - 10 KB)", L"size:0..10kb"},
+                {L"Piccolo (10 - 100 KB)", L"size:10kb..100kb"}});
+    flyout.Items().Append(winrt::Microsoft::UI::Xaml::Controls::MenuFlyoutSeparator());
+
+    auto addToggle = [&](wchar_t const* text, wchar_t const* iconGlyph, const wchar_t* token,
+                         bool contentToggle) {
+        auto item = winrt::Microsoft::UI::Xaml::Controls::ToggleMenuFlyoutItem();
+        item.Text(text);
+        item.Icon(glyph(iconGlyph));
+        item.IsChecked(contentToggle ? request.contentSearch
+                                     : HasFilterToken(request.filter, token));
+        item.Click([frame, originFallback, token, contentToggle](
+                       auto const& sender, auto const&) {
+            auto toggle = sender.as<winrt::Microsoft::UI::Xaml::Controls::ToggleMenuFlyoutItem>();
+            esx::QueryRequest current{};
+            esx::ReadRequestForWindow(RequestKeyForFrame(frame), current);
+            if (contentToggle) {
+                ApplySearchOptions(frame, current.flags, current.maxResults, current.filter,
+                                   toggle.IsChecked(), originFallback);
+            } else {
+                const std::wstring filter =
+                    WithFilterToken(current.filter, token, toggle.IsChecked());
+                ApplySearchOptions(frame, current.flags, current.maxResults, filter,
+                                   current.contentSearch, originFallback);
+            }
+        });
+        flyout.Items().Append(item);
+    };
+    addToggle(L"File di sistema", L"\uE7C0", L"attributes:s", false);
+    addToggle(L"Cartelle compresse (ZIP)", L"\uE7B8", L"zip:", false);
+    addToggle(L"Contenuto file", L"\uE8A5", nullptr, true);
+    flyout.Items().Append(winrt::Microsoft::UI::Xaml::Controls::MenuFlyoutSeparator());
+
+    options.Flyout(flyout);
+
+    winrt::com_ptr<::IInspectable> rawOptions = options.as<::IInspectable>();
+    hr = diagnostics->RegisterInstance(rawOptions.get(), &state->optionsButtonHandle);
+    if (FAILED(hr) || !state->optionsButtonHandle) {
+        Log("search buttons: options register failed hr=0x%08X", static_cast<unsigned long>(hr));
+        return FAILED(hr) ? hr : E_UNEXPECTED;
+    }
+    hr = service->AddChild(barCollection, state->optionsButtonHandle, insertAt);
+    if (FAILED(hr)) {
+        Log("search buttons: options add failed hr=0x%08X", static_cast<unsigned long>(hr));
+        return hr;
+    }
+
+    state->optionsButton = options;
+    state->commandBarAdded = true;
+    state->buttonsVisible = true;
+    Log("search buttons added frame=%p", frame);
+    return S_OK;
+}
 
 static void RunC3ProbeForState(const std::shared_ptr<WindowState>& state) {
     if (!state || !state->watcher) return;
@@ -2751,9 +3186,10 @@ static void RunC3ProbeForState(const std::shared_ptr<WindowState>& state) {
                 Log("C3 ABORT: missing XAML diagnostics/service");
                 return E_UNEXPECTED;
             }
-            Log("C3 begin tid=%lu frame=%p pid=%lu gen=%llu native=%llu "
-                "service=%p",
-                tid, frame, pid, static_cast<unsigned long long>(generation),
+            Log("C3 begin tid=%lu frame=%p tab=%p queryText='%ls' pid=%lu gen=%llu "
+                "native=%llu service=%p",
+                tid, frame, static_cast<void*>(state->tab), state->queryText.c_str(),
+                pid, static_cast<unsigned long long>(generation),
                 static_cast<unsigned long long>(nativeHandle), service);
 
             // C1.1/C1.2: re-acquire the native element and verify identity.
@@ -2810,6 +3246,12 @@ static void RunC3ProbeForState(const std::shared_ptr<WindowState>& state) {
             // C1.4/C1.5: create the TextBox and register it in this dispatch.
             auto box = winrt::Microsoft::UI::Xaml::Controls::TextBox();
             box.PlaceholderText(L"Cerca con Everything");
+            // Restore this tab's last query; a brand-new tab starts empty.
+            if (state && !state->queryText.empty()) {
+                box.Text(winrt::hstring(state->queryText));
+                box.SelectionStart(static_cast<int32_t>(state->queryText.size()));
+                box.SelectionLength(0);
+            }
             box.Visibility(winrt::Microsoft::UI::Xaml::Visibility::Visible);
             box.IsEnabled(true);
             box.IsTabStop(true);
@@ -2833,9 +3275,14 @@ static void RunC3ProbeForState(const std::shared_ptr<WindowState>& state) {
             winrt::Microsoft::UI::Xaml::Controls::Grid::SetColumnSpan(
                 box, winrt::Microsoft::UI::Xaml::Controls::Grid::GetColumnSpan(element));
 
-            box.KeyDown([box, frame](
+            box.KeyDown([box, frame, weak = std::weak_ptr<WindowState>(state)](
                             auto const&,
                             winrt::Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& args) {
+                auto state = weak.lock();
+                if (!state) {
+                    args.Handled(true);
+                    return;
+                }
                 const int key = static_cast<int>(args.Key());
                 if (key == VK_RETURN) {
                     const auto text = box.Text();
@@ -2844,26 +3291,67 @@ static void RunC3ProbeForState(const std::shared_ptr<WindowState>& state) {
                         return;
                     }
                     const std::wstring query(text.c_str(), text.size());
+                    if (state) state->queryText = query;
                     const bool inResults = IsResultsFolder(frame);
-                    const std::wstring scope =
-                        inResults ? std::wstring() : CurrentFolderPath(frame);
-                    const bool written = WriteSearchRequest(query, scope);
-                    Log("C3 Enter query='%ls' scope='%ls' written=%d",
-                        query.c_str(), scope.c_str(), written ? 1 : 0);
+                    // Keep the folder the first search started from: a second
+                    // search inside the results view has no filesystem path of
+                    // its own, so the original scope must be carried over.
+                    // This is per-window state, like the request file.
+                    std::wstring scope;
+                    if (inResults) {
+                        scope = state ? state->origin : std::wstring();
+                    } else {
+                        scope = CurrentFolderPath(frame);
+                        if (state && !scope.empty()) state->origin = scope;
+                    }
+                    const HWND key = ActiveTabWindow(frame);
+                    if (key) SaveTabText(key, query);
+                    const bool written = WriteSearchRequest(query, scope, key ? key : frame);
+                    Log("C3 Enter query='%ls' scope='%ls' key=%p written=%d",
+                        query.c_str(), scope.c_str(), static_cast<void*>(key),
+                        written ? 1 : 0);
+                    if (state) state->closingSearch.store(false);
                     if (written && IsWindow(frame)) NavigateToResults(frame);
                     box.Focus(winrt::Microsoft::UI::Xaml::FocusState::Programmatic);
+                    // Focus/Text assignment can reset the caret to position 0.
+                    box.SelectionStart(static_cast<int32_t>(text.size()));
+                    box.SelectionLength(0);
                     args.Handled(true);
                 } else if (key == VK_ESCAPE) {
-                    box.Text(L"");
+                    if (IsResultsFolder(frame)) {
+                        CloseSearchForFrame(frame, state);
+                    } else {
+                        state->ignoreNextEmpty.store(true);
+                        box.Text(L"");
+                    }
                     args.Handled(true);
                 }
             });
-            box.GotFocus([state](auto const&, auto const&) {
+            box.TextChanged([box, frame, weak = std::weak_ptr<WindowState>(state)](
+                                 auto const&, auto const&) {
+                auto state = weak.lock();
+                if (!state || state->closingSearch.load()) return;
+                if (state->ignoreNextEmpty.exchange(false)) return;
+                const std::wstring current(box.Text().c_str(), box.Text().size());
+                const HWND tab = ActiveTabWindow(frame);
+                if (tab) SaveTabText(tab, current);
+                // IsResultsFolder() enumerates IShellWindows: only pay for it
+                // when the field actually became empty.
+                if (current.empty() && IsResultsFolder(frame)) {
+                    Log("C3 clear button closes search frame=%p", frame);
+                    CloseSearchForFrame(frame, state);
+                }
+            });
+            box.GotFocus([weak = std::weak_ptr<WindowState>(state)](auto const&, auto const&) {
+                auto state = weak.lock();
+                if (!state) return;
                 state->textHasFocus.store(true);
                 Log("DIRECT focus gained frame=%p tid=%lu", state->frame,
                     GetCurrentThreadId());
             });
-            box.LostFocus([state](auto const&, auto const&) {
+            box.LostFocus([weak = std::weak_ptr<WindowState>(state)](auto const&, auto const&) {
+                auto state = weak.lock();
+                if (!state) return;
                 state->textHasFocus.store(false);
                 Log("DIRECT focus lost frame=%p tid=%lu", state->frame,
                     GetCurrentThreadId());
@@ -2887,6 +3375,11 @@ static void RunC3ProbeForState(const std::shared_ptr<WindowState>& state) {
                 Log("C3 RESULT FAIL (AddChild)");
                 return addHr;
             }
+
+            // Add the search command-bar button on the same XAML dispatcher.
+            const HRESULT barHr = AddSearchCommandBarButtons(
+                diagnostics.get(), service, state, frame, element);
+            Log("C3 search buttons hr=0x%08X", static_cast<unsigned long>(barHr));
 
             // C3.2/C3.3: verify count and our element identity.
             unsigned afterSize = 0;
@@ -3146,7 +3639,7 @@ void TryCreateExperimentTextBox() {
                     const bool inResults = IsResultsFolder(frame);
                     std::wstring scope = inResults ? std::wstring()
                                                    : CurrentFolderPath(frame);
-                    const bool written = WriteSearchRequest(query, scope);
+                    const bool written = WriteSearchRequest(query, scope, frame);
                     Log("DIRECT Enter query='%ls' scope='%ls'", query.c_str(),
                         scope.c_str());
                     Log("DIRECT request written=%d", written ? 1 : 0);
@@ -3289,7 +3782,10 @@ void RestoreReplacement(bool synchronous) {
             Log("OWNER ROLLBACK skipped: channel gone frame=%p", state->frame);
             continue;
         }
-        state->rollbackTx->ready.store(false);
+        // The C3 path never allocates a rollback transaction.
+        if (state->rollbackTx) {
+            state->rollbackTx->ready.store(false);
+        }
         auto* request = new (std::nothrow) OwnerAddRequest();
         if (!request) continue;
         request->state = state;
@@ -3774,7 +4270,7 @@ std::string ToUtf8(const std::wstring& value) {
     return result;
 }
 
-bool WriteSearchRequest(const std::wstring& query, const std::wstring& folder) {
+bool WriteSearchRequest(const std::wstring& query, const std::wstring& folder, HWND frame) {
     PWSTR raw = nullptr;
     if (FAILED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &raw)) || !raw)
         return false;
@@ -3785,8 +4281,13 @@ bool WriteSearchRequest(const std::wstring& query, const std::wstring& folder) {
         GetLastError() != ERROR_ALREADY_EXISTS)
         return false;
 
-    const std::wstring path = directory + L"\\request.txt";
-    const std::wstring temporary = path + L".tmp";
+    const std::wstring globalPath = directory + L"\\request.txt";
+    std::wstring windowPath;
+    if (frame && IsWindow(frame)) {
+        windowPath = directory + L"\\request-" +
+                     std::to_wstring(reinterpret_cast<ULONG_PTR>(frame)) + L".txt";
+    }
+
     FILETIME now{};
     GetSystemTimeAsFileTime(&now);
     const unsigned sequence = static_cast<unsigned>(
@@ -3795,33 +4296,169 @@ bool WriteSearchRequest(const std::wstring& query, const std::wstring& folder) {
 
     // bit 0 = scope to the folder the search started from, bit 1 = folders.
     const bool scoped = g_scopeToFolder && !folder.empty();
-    const unsigned flags = 2u | (scoped ? 1u : 0u);
+    const unsigned flags = 2u | (scoped ? 1u : 0u) | (scoped ? 4u : 0u);
     std::string data = "seq=" + std::to_string(sequence) + "\n" +
                        "max=" + std::to_string(g_maxResults) +
                        "\nflags=" + std::to_string(flags) +
                        "\nfolder=" + ToUtf8(scoped ? folder : std::wstring()) +
                        "\nquery=" + ToUtf8(query) + "\n";
-    Log("writing search request flags=%u folder='%ls' query='%ls'", flags,
-        folder.c_str(), query.c_str());
-    HANDLE file = CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr,
-                              CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (file == INVALID_HANDLE_VALUE) return false;
-    DWORD written = 0;
-    const bool ok = WriteFile(file, data.data(), static_cast<DWORD>(data.size()),
-                              &written, nullptr) &&
-                    written == data.size();
-    CloseHandle(file);
-    if (!ok) return false;
-    return MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING) != FALSE;
+
+    // The global file is kept for compatibility with external tools, but the
+    // extension reads the per-window snapshot: otherwise a search in another
+    // frame overwrites it and a refresh here adopts that query.
+    auto writeOne = [&](const std::wstring& path) -> bool {
+        if (path.empty()) return true;
+        const std::wstring temporary = path + L".tmp";
+        HANDLE file = CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr,
+                                  CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file == INVALID_HANDLE_VALUE) return false;
+        DWORD written = 0;
+        const bool ok = WriteFile(file, data.data(), static_cast<DWORD>(data.size()),
+                                  &written, nullptr) &&
+                        written == data.size();
+        CloseHandle(file);
+        if (!ok) return false;
+        return MoveFileExW(temporary.c_str(), path.c_str(),
+                           MOVEFILE_REPLACE_EXISTING) != FALSE;
+    };
+
+    const bool global = writeOne(globalPath);
+    const bool perWindow = writeOne(windowPath);
+    Log("writing search request frame=%p flags=%u folder='%ls' query='%ls' "
+        "global=%d perWindow=%d",
+        frame, flags, folder.c_str(), query.c_str(), global ? 1 : 0, perWindow ? 1 : 0);
+    return global && perWindow;
+}
+
+static HWND AncestorWithClass(HWND hwnd, const wchar_t* className) {
+    for (HWND current = hwnd; current; current = ::GetParent(current)) {
+        wchar_t found[128]{};
+        if (!::GetClassNameW(current, found, ARRAYSIZE(found))) continue;
+        if (_wcsicmp(found, className) == 0) return current;
+    }
+    return nullptr;
+}
+
+// A tabbed Explorer window shares one top-level CabinetWClass frame. The
+// per-tab window is a ShellTabWindowClass child, which is the identity we need
+// for both the request file and the IShellBrowser.
+// Which tab owns a screen rectangle (the search field). This is unambiguous
+// even when the focus is elsewhere or several tabs share the same frame.
+static HWND TabWindowForRect(HWND frame, const RECT& rect) {
+    struct RectLookup {
+        POINT center;
+        HWND found;
+    } lookup{{(rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2}, nullptr};
+    ::EnumChildWindows(
+        frame,
+        [](HWND hwnd, LPARAM parameter) -> BOOL {
+            auto* data = reinterpret_cast<RectLookup*>(parameter);
+            wchar_t className[128]{};
+            if (!::GetClassNameW(hwnd, className, ARRAYSIZE(className)) ||
+                _wcsicmp(className, L"ShellTabWindowClass") != 0) {
+                return TRUE;
+            }
+            RECT windowRect{};
+            if (!::GetWindowRect(hwnd, &windowRect) || !::PtInRect(&windowRect, data->center)) {
+                return TRUE;
+            }
+            data->found = hwnd;
+            return FALSE;
+        },
+        reinterpret_cast<LPARAM>(&lookup));
+    return lookup.found;
+}
+
+// Each tab owns its own XAML dispatcher thread. Matching the thread reported
+// by the diagnostics callback to the ShellTabWindowClass window identifies the
+// tab unambiguously, even when several tabs have identical screen rectangles.
+static HWND TabWindowForThread(DWORD pid, DWORD threadId) {
+    struct ThreadLookup {
+        DWORD pid;
+        DWORD thread;
+        HWND found;
+    } lookup{pid, threadId, nullptr};
+
+    ::EnumWindows(
+        [](HWND top, LPARAM parameter) -> BOOL {
+            auto* data = reinterpret_cast<ThreadLookup*>(parameter);
+            DWORD windowPid = 0;
+            ::GetWindowThreadProcessId(top, &windowPid);
+            if (windowPid != data->pid) return TRUE;
+            ::EnumChildWindows(
+                top,
+                [](HWND child, LPARAM inner) -> BOOL {
+                    auto* found = reinterpret_cast<ThreadLookup*>(inner);
+                    wchar_t className[128]{};
+                    if (!::GetClassNameW(child, className, ARRAYSIZE(className)) ||
+                        _wcsicmp(className, L"ShellTabWindowClass") != 0) {
+                        return TRUE;
+                    }
+                    DWORD childPid = 0;
+                    const DWORD childThread = ::GetWindowThreadProcessId(child, &childPid);
+                    if (childThread == found->thread && childPid == found->pid) {
+                        found->found = child;
+                        return FALSE;
+                    }
+                    return TRUE;
+                },
+                parameter);
+            return data->found ? FALSE : TRUE;
+        },
+        reinterpret_cast<LPARAM>(&lookup));
+    return lookup.found;
+}
+
+static HWND ActiveTabWindow(HWND frame) {
+    HWND focus = ::GetFocus();
+    HWND tab = AncestorWithClass(focus, L"ShellTabWindowClass");
+    if (tab && (tab == frame || ::IsChild(frame, tab))) return tab;
+
+    // The keyboard hook runs on the coordinator thread, so GetFocus() is not
+    // our focus. Ask the foreground thread for its real focus HWND instead.
+    HWND foreground = ::GetForegroundWindow();
+    if (foreground) {
+        const DWORD foregroundThread = ::GetWindowThreadProcessId(foreground, nullptr);
+        GUITHREADINFO info{};
+        info.cbSize = sizeof(info);
+        if (::GetGUIThreadInfo(foregroundThread, &info)) {
+            tab = AncestorWithClass(info.hwndFocus, L"ShellTabWindowClass");
+            if (tab && (tab == frame || ::IsChild(frame, tab))) return tab;
+        }
+    }
+
+    tab = AncestorWithClass(foreground, L"ShellTabWindowClass");
+    if (tab && (tab == frame || ::IsChild(frame, tab))) return tab;
+
+    struct FirstTab {
+        HWND frame;
+        HWND found;
+    } search{frame, nullptr};
+    ::EnumChildWindows(
+        frame,
+        [](HWND hwnd, LPARAM parameter) -> BOOL {
+            auto* data = reinterpret_cast<FirstTab*>(parameter);
+            wchar_t className[128]{};
+            if (!::GetClassNameW(hwnd, className, ARRAYSIZE(className)) ||
+                _wcsicmp(className, L"ShellTabWindowClass") != 0 || !::IsWindowVisible(hwnd)) {
+                return TRUE;
+            }
+            data->found = hwnd;
+            return FALSE;
+        },
+        reinterpret_cast<LPARAM>(&search));
+    return search.found;
 }
 
 bool GetBrowserForWindow(HWND frame, winrt::com_ptr<IShellBrowser>& browser) {
+    const HWND targetTab = ActiveTabWindow(frame);
     winrt::com_ptr<IShellWindows> windows;
     if (FAILED(CoCreateInstance(CLSID_ShellWindows, nullptr, CLSCTX_ALL,
                                 IID_PPV_ARGS(windows.put()))))
         return false;
     long count = 0;
     if (FAILED(windows->get_Count(&count))) return false;
+    winrt::com_ptr<IShellBrowser> fallback;
     for (long i = 0; i < count; ++i) {
         VARIANT index;
         VariantInit(&index);
@@ -3837,10 +4474,23 @@ bool GetBrowserForWindow(HWND frame, winrt::com_ptr<IShellBrowser>& browser) {
             continue;
         HWND window = nullptr;
         if (FAILED(candidate->GetWindow(&window)) || !window) continue;
-        if (window == frame || IsChild(frame, window)) {
+
+        // The status bar belongs to the browser's tab, while GetWindow() always
+        // returns the shared top-level frame.
+        HWND status = nullptr;
+        candidate->GetControlWindow(FCW_STATUS, &status);
+        const HWND tab = AncestorWithClass(status, L"ShellTabWindowClass");
+        if (targetTab && tab == targetTab) {
             browser = candidate;
             return true;
         }
+        if (!fallback && (window == frame || ::IsChild(frame, window))) {
+            fallback = candidate;
+        }
+    }
+    if (fallback) {
+        browser = fallback;
+        return true;
     }
     return false;
 }
@@ -3981,6 +4631,7 @@ std::wstring CurrentFolderPath(HWND frame) {
 }
 
 void NavigateToResults(HWND frame) {
+    const bool wasResults = IsResultsFolder(frame);
     PIDLIST_ABSOLUTE pidl = nullptr;
     const HRESULT parseHr = SHParseDisplayName(
         L"shell:::{7B39C2A2-3E1F-4E4C-9E58-2D9A7B1C4F60}", nullptr, &pidl, 0, nullptr);
@@ -3992,7 +4643,7 @@ void NavigateToResults(HWND frame) {
     winrt::com_ptr<IShellBrowser> browser;
     if (GetBrowserForWindow(frame, browser) && browser) {
         const HRESULT hr = browser->BrowseObject(pidl, SBSP_ABSOLUTE | SBSP_SAMEBROWSER);
-        Log("BrowseObject hr=0x%08X", hr);
+        Log("BrowseObject hr=0x%08X wasResults=%d", hr, wasResults ? 1 : 0);
         if (FAILED(hr)) {
             SHELLEXECUTEINFOW info{};
             info.cbSize = sizeof(info);
@@ -4001,6 +4652,13 @@ void NavigateToResults(HWND frame) {
             info.lpIDList = pidl;
             info.nShow = SW_SHOWNORMAL;
             ShellExecuteExW(&info);
+        } else if (wasResults) {
+            // Browsing to the same CLSID PIDL is a no-op for Explorer, so a new
+            // search issued from inside the results view would keep showing the
+            // previous query. Ask the shell to update this folder; Explorer
+            // re-enumerates and the extension reads this window's request.
+            SHChangeNotify(SHCNE_UPDATEDIR, SHCNF_IDLIST | SHCNF_FLUSHNOWAIT, pidl, nullptr);
+            Log("results change notification sent");
         }
     }
     CoTaskMemFree(pidl);
@@ -4057,10 +4715,14 @@ void EnsureAutomation() {
 // search box. The hook runs on the coordinator thread, which owns g_sessions.
 static std::shared_ptr<WindowState> FindActiveStateForFrame(HWND frame) {
     if (!frame) return nullptr;
+    const HWND tab = ActiveTabWindow(frame);
     std::lock_guard<std::mutex> guard(g_windowStatesMutex);
     for (const auto& item : g_windowStates) {
         const auto& state = item.second;
-        if (state->frame == frame && state->replacementActive) return state;
+        if (state->replacementActive &&
+            ((tab && state->tab == tab) || (!tab && state->frame == frame))) {
+            return state;
+        }
     }
     return nullptr;
 }
@@ -4085,6 +4747,30 @@ static bool PostToStateDispatcher(const std::shared_ptr<WindowState>& state,
         return false;
     }
 }
+static void DeleteBeforeCaret(winrt::Microsoft::UI::Xaml::Controls::TextBox const& box) {
+    const auto selected = box.SelectedText();
+    if (!selected.empty()) {
+        box.SelectedText(L"");
+        return;
+    }
+    const int32_t caret = box.SelectionStart();
+    if (caret <= 0) return;
+
+    std::wstring text(box.Text().c_str());
+    size_t pos = static_cast<size_t>(caret);
+    if (pos > text.size()) pos = text.size();
+    // Do not split a UTF-16 surrogate pair when deleting the previous glyph.
+    if (pos >= 2 && text[pos - 1] >= 0xD800 && text[pos - 1] <= 0xDBFF &&
+        text[pos - 2] >= 0xDC00 && text[pos - 2] <= 0xDFFF) {
+        --pos;
+    }
+    if (pos == 0) return;
+    text.erase(pos - 1, 1);
+    box.Text(winrt::hstring(text));
+    box.SelectionStart(static_cast<int32_t>(pos - 1));
+    box.SelectionLength(0);
+}
+
 LRESULT CALLBACK KeyboardHookProc(int code, WPARAM wParam, LPARAM lParam) {
     if (code == HC_ACTION && (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN)) {
         auto* key = reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam);
@@ -4102,21 +4788,8 @@ LRESULT CALLBACK KeyboardHookProc(int code, WPARAM wParam, LPARAM lParam) {
             if (activeState && activeState->textHasFocus.load()) {
                 const bool queued = PostToStateDispatcher(
                     activeState, [activeState]() {
-                        auto box = activeState->textBox;
-                        if (!box) return;
-                        const auto selected = box.SelectedText();
-                        if (!selected.empty()) {
-                            box.SelectedText(L"");
-                        } else {
-                            const auto text = box.Text();
-                            std::wstring updated(text.c_str(), text.size());
-                            if (!updated.empty()) {
-                                updated.pop_back();
-                                box.Text(winrt::hstring(updated));
-                                box.SelectionStart(
-                                    static_cast<int32_t>(updated.size()));
-                                box.SelectionLength(0);
-                            }
+                        if (activeState->textBox) {
+                            DeleteBeforeCaret(activeState->textBox);
                         }
                     });
                 if (queued) {
@@ -4133,20 +4806,7 @@ LRESULT CALLBACK KeyboardHookProc(int code, WPARAM wParam, LPARAM lParam) {
                 it->second->searchHandle) {
                 auto session = it->second;
                 session->watcher->RunOnDispatcher(session->searchHandle, [session]() {
-                    auto box = session->box;
-                    const auto selected = box.SelectedText();
-                    if (!selected.empty()) {
-                        box.SelectedText(L"");
-                    } else {
-                        const auto text = box.Text();
-                        if (!text.empty()) {
-                            std::wstring updated(text.c_str(), text.size());
-                            updated.pop_back();
-                            box.Text(winrt::hstring(updated));
-                            box.SelectionStart(static_cast<int32_t>(updated.size()));
-                            box.SelectionLength(0);
-                        }
-                    }
+                    DeleteBeforeCaret(session->box);
                     return S_OK;
                 });
                 Log("Backspace consumed by search field frame=%p", frame);
@@ -4438,9 +5098,28 @@ HRESULT EnsureXamlRuntime() {
                 // runtime from the MSIX package.
                 using BootstrapInitFn =
                     HRESULT(WINAPI*)(UINT32, PCWSTR, PACKAGE_VERSION);
-                HMODULE bootstrap = ::LoadLibraryW(
-                    L"C:\\ProgramData\\Windhawk\\Engine\\Mods\\64\\"
-                    L"Microsoft.WindowsAppRuntime.Bootstrap.dll");
+                // The bootstrap DLL is installed next to this mod DLL, which
+                // may live outside the default Windhawk directory.
+                wchar_t bootstrapPath[MAX_PATH]{};
+                HMODULE self = nullptr;
+                if (::GetModuleHandleExW(
+                        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                            GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                        reinterpret_cast<LPCWSTR>(&EnsureXamlRuntime), &self) &&
+                    self &&
+                    ::GetModuleFileNameW(self, bootstrapPath, ARRAYSIZE(bootstrapPath))) {
+                    wchar_t* slash = std::wcsrchr(bootstrapPath, L'\\');
+                    if (slash) {
+                        const size_t remaining =
+                            ARRAYSIZE(bootstrapPath) - static_cast<size_t>(slash + 1 - bootstrapPath);
+                        ::wcscpy_s(slash + 1, remaining,
+                                   L"Microsoft.WindowsAppRuntime.Bootstrap.dll");
+                    } else {
+                        bootstrapPath[0] = L'\0';
+                    }
+                }
+                HMODULE bootstrap =
+                    bootstrapPath[0] ? ::LoadLibraryW(bootstrapPath) : nullptr;
                 Log("bootstrap module=%p", bootstrap);
                 if (bootstrap) {
                     auto bootstrapInit = reinterpret_cast<BootstrapInitFn>(
@@ -4540,16 +5219,25 @@ HRESULT CreateSession(HWND frame) {
         session->box.MaxLength(1024);
         session->box.VerticalContentAlignment(
             winrt::Microsoft::UI::Xaml::VerticalAlignment::Center);
-        session->box.GotFocus([session](auto const&, auto const&) {
+        session->box.GotFocus([weak = std::weak_ptr<Session>(session)](auto const&, auto const&) {
+            auto session = weak.lock();
+            if (!session) return;
             session->typedFocus = true;
             Log("search field got focus frame=%p", session->frame);
         });
-        session->box.LostFocus([session](auto const&, auto const&) {
-            session->typedFocus = false;
+        session->box.LostFocus([weak = std::weak_ptr<Session>(session)](auto const&, auto const&) {
+            auto session = weak.lock();
+            if (session) session->typedFocus = false;
         });
         session->box.KeyDown(
-            [frame, session](winrt::Windows::Foundation::IInspectable const& sender,
-                             winrt::Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& args) {
+            [frame, weak = std::weak_ptr<Session>(session)](
+                winrt::Windows::Foundation::IInspectable const& sender,
+                winrt::Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& args) {
+                auto session = weak.lock();
+                if (!session) {
+                    args.Handled(true);
+                    return;
+                }
                 const int key = static_cast<int>(args.Key());
                 // The XAML island forwards unhandled keys to Explorer's command
                 // bar, where Backspace means "go back". Our TextBox owns every
@@ -4603,7 +5291,7 @@ HRESULT CreateSession(HWND frame) {
                     Log("search scope results=%d current='%ls' origin='%ls'",
                         inResults ? 1 : 0, current.c_str(), scope.c_str());
                     const bool written =
-                        WriteSearchRequest(std::wstring(query.c_str()), scope);
+                        WriteSearchRequest(std::wstring(query.c_str()), scope, frame);
                     const ULONGLONG tWrite = GetTickCount64();
                     Log("XAML request written=%d", written ? 1 : 0);
                     if (written) NavigateToResults(frame);
@@ -4750,10 +5438,17 @@ void ScanFrames() {
                 // not need the UIA sweep: that FindFirst call can block the
                 // coordinator for hundreds of ms and is only a fallback.
                 {
-                    std::lock_guard<std::mutex> guard(g_windowStatesMutex);
-                    auto mapped = g_windowStates.find(frame);
-                    if (mapped != g_windowStates.end() &&
-                        mapped->second->xamlMapped) {
+                    bool mapped = false;
+                    {
+                        std::lock_guard<std::mutex> guard(g_windowStatesMutex);
+                        for (const auto& item : g_windowStates) {
+                            if (item.second->frame == frame && item.second->xamlMapped) {
+                                mapped = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (mapped) {
                         inventoriedFrames.insert(frame);
                         continue;
                     }
@@ -4808,16 +5503,15 @@ DWORD WINAPI CoordinatorThread(LPVOID) {
         winrt::init_apartment(winrt::apartment_type::single_threaded);
         Log("apartment ok");
         EnsureAutomation();
+        // Install the keyboard hook first: EnsureDiagnosticsObserver() can retry
+        // for up to a minute, and Ctrl+F must work immediately at startup.
+        g_keyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, KeyboardHookProc, nullptr, 0);
+        Log("keyboard hook=%p", g_keyboardHook);
         EnsureDiagnosticsObserver();
         // XAML runtime bootstrap and dispatcher creation are deferred to
         // CreateSession, which runs as soon as the native search box exists.
         // Scan immediately: a visible native bar before the replacement is
         // the delay we are trying to remove.
-
-        // Intercept Explorer's search shortcuts before the hidden native box
-        // can take focus. Low-level hooks are dispatched by our message loop.
-        g_keyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, KeyboardHookProc, nullptr, 0);
-        Log("keyboard hook=%p", g_keyboardHook);
 
         ULONGLONG lastInventory = 0;
         ULONGLONG lastPhase2Attempt = 0;
@@ -4831,14 +5525,14 @@ DWORD WINAPI CoordinatorThread(LPVOID) {
             while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
                 if (message.message == WM_QUIT) {
                     Log("coordinator WM_QUIT");
-                    waitHr; // keep the variable used
                     goto shutdown;
                 }
                 if (message.hwnd == nullptr && message.message == kSubmitQueryMessage) {
                     auto* query = reinterpret_cast<std::wstring*>(message.lParam);
                     if (query) {
                         Log("submitting query from XAML: %ls", query->c_str());
-                        WriteSearchRequest(*query, {});
+                        WriteSearchRequest(*query, {},
+                                           reinterpret_cast<HWND>(message.wParam));
                         NavigateToResults(reinterpret_cast<HWND>(message.wParam));
                         delete query;
                     }
@@ -4865,6 +5559,74 @@ DWORD WINAPI CoordinatorThread(LPVOID) {
             UpdateGeometry();
 
             const ULONGLONG now = GetTickCount64();
+
+            // Explorer shares one search box between the tabs of a window.
+            // When the active tab changes, swap the text with the value saved
+            // for that tab (empty for a tab that never searched).
+            std::vector<std::shared_ptr<WindowState>> textStates;
+            {
+                std::lock_guard<std::mutex> guard(g_windowStatesMutex);
+                for (const auto& item : g_windowStates) {
+                    if (item.second->textBox) textStates.push_back(item.second);
+                }
+            }
+            for (const auto& state : textStates) {
+                if (!::IsWindow(state->frame)) continue;
+                const HWND tab = ActiveTabWindow(state->frame);
+                if (!tab) continue;
+                HWND previous = nullptr;
+                {
+                    std::lock_guard<std::mutex> guard(g_tabTextMutex);
+                    const auto it = g_frameLastTab.find(state->frame);
+                    if (it != g_frameLastTab.end()) previous = it->second;
+                    g_frameLastTab[state->frame] = tab;
+                }
+                if (!previous || previous == tab) continue;
+                {
+                    // FindActiveStateForFrame() matches state->tab: keep it in
+                    // sync with the tab we just switched to.
+                    std::lock_guard<std::mutex> guard(g_windowStatesMutex);
+                    state->tab = tab;
+                }
+                const std::wstring text = LoadTabText(tab);
+                PostToStateDispatcher(state, [state, text, tab]() {
+                    if (!state->textBox) return;
+                    state->ignoreNextEmpty.store(true);
+                    state->textBox.Text(winrt::hstring(text));
+                    state->textBox.SelectionStart(static_cast<int32_t>(text.size()));
+                    state->textBox.SelectionLength(0);
+                    Log("tab switched to=%p restored query='%ls'", tab, text.c_str());
+                });
+            }
+
+            // Keep the search buttons in sync with the folder the window shows.
+            // Snapshot under the map lock: XAML callbacks on other threads can
+            // insert/erase WindowState objects while this loop runs.
+            std::vector<std::shared_ptr<WindowState>> buttonStates;
+            {
+                std::lock_guard<std::mutex> guard(g_windowStatesMutex);
+                buttonStates.reserve(g_windowStates.size());
+                for (const auto& item : g_windowStates) {
+                    if (item.second->commandBarAdded.load()) {
+                        buttonStates.push_back(item.second);
+                    }
+                }
+            }
+            for (const auto& state : buttonStates) {
+                const ULONGLONG last = state->lastButtonCheck.load();
+                if (now - last < 750) continue;
+                state->lastButtonCheck.store(now);
+                const bool visible = IsResultsFolder(state->frame);
+                if (visible == state->buttonsVisible.load()) continue;
+                state->buttonsVisible.store(visible);
+                PostToStateDispatcher(state, [state, visible]() {
+                    const auto value = visible
+                                           ? winrt::Microsoft::UI::Xaml::Visibility::Visible
+                                           : winrt::Microsoft::UI::Xaml::Visibility::Collapsed;
+                    if (state->optionsButton) state->optionsButton.Visibility(value);
+                });
+            }
+
             if (now - lastInventory >= 10000) {
                 lastInventory = now;
                 LogProcessInventory();
@@ -5067,26 +5829,35 @@ extern "C" void Wh_ModUninit() {
         g_stopping = true;
         if (g_stopEvent) SetEvent(g_stopEvent);
     }
+    bool coordinatorStopped = true;
     if (g_thread) {
         // Bound the join: a hung XAML dispatcher must never block mod unload
         // indefinitely (Windhawk shows "Uninitializing..." forever).
-        const DWORD wait = WaitForSingleObject(g_thread, 3000);
-        Log("Wh_ModUninit: coordinator join wait=%lu",
-            static_cast<unsigned long>(wait));
+        DWORD wait = WaitForSingleObject(g_thread, 3000);
         if (wait == WAIT_TIMEOUT) {
-            Log("Wh_ModUninit: coordinator join timed out");
+            Log("Wh_ModUninit: coordinator join timed out, waiting 5s more");
+            wait = WaitForSingleObject(g_thread, 5000);
         }
-        CloseHandle(g_thread);
-        g_thread = nullptr;
+        coordinatorStopped = wait == WAIT_OBJECT_0;
+        Log("Wh_ModUninit: coordinator join result=%lu stopped=%d",
+            static_cast<unsigned long>(wait), coordinatorStopped ? 1 : 0);
+        if (coordinatorStopped) {
+            CloseHandle(g_thread);
+            g_thread = nullptr;
+        }
     }
     // If the coordinator did not get to its own cleanup, stop every watcher
     // thread here: Windhawk waits up to 80s for mod code to leave thread
     // stacks before unloading the DLL.
     StopAllXamlDiagnostics();
-    if (g_stopEvent) { CloseHandle(g_stopEvent); g_stopEvent = nullptr; }
-    if (g_tapAttachedEvent) {
-        CloseHandle(g_tapAttachedEvent);
-        g_tapAttachedEvent = nullptr;
+    // Closing events while the coordinator is still alive would leave it
+    // waiting on invalid handles; keep them open in that case.
+    if (coordinatorStopped) {
+        if (g_stopEvent) { CloseHandle(g_stopEvent); g_stopEvent = nullptr; }
+        if (g_tapAttachedEvent) {
+            CloseHandle(g_tapAttachedEvent);
+            g_tapAttachedEvent = nullptr;
+        }
     }
 }
 

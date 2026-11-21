@@ -3,7 +3,6 @@ add_library(EverythingSearchNse SHARED
     pidl.cpp
     bridge.cpp
     folder.cpp
-    search_actions.cpp
     version.rc
     nse.def)
 

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstring>
 #include <iterator>
+#include <mutex>
 #include <new>
 #include <string>
 #include <vector>
@@ -19,7 +20,8 @@ constexpr wchar_t kIpcWindowClass[] = L"EverythingSearchIpcWnd";
 
 // Replies carry this value in COPYDATASTRUCT::dwData, so a late reply from an
 // abandoned query cannot be mistaken for the current one.
-constexpr DWORD kReplyBase = 0x45530000;
+// High bits identify our replies; the low 20 bits hold a wrapping counter.
+constexpr DWORD kReplyBase = 0x45500000;
 constexpr DWORD kSendTimeoutMs = 4000;   // Everything hung: give up early
 constexpr DWORD kReplyTimeoutMs = 5000;  // large pages need real time
 constexpr DWORD kRequestFlags = esx::ipc::kRequestName | esx::ipc::kRequestPath |
@@ -61,6 +63,9 @@ HANDLE g_ready = nullptr;
 HANDLE g_thread = nullptr;
 Job* g_pending = nullptr;
 LONG g_nextJobId = 0;
+// Everything keeps only one query per reply window. Serialize whole page
+// requests so two CFolder instances cannot cancel each other's g_pending job.
+std::mutex g_queryMutex;
 
 // --------------------------------------------------------------- utilities
 
@@ -86,14 +91,25 @@ std::string DescribeError(Error error) {
 // Everything requires matches to stay inside the folder when scoped. The
 // "path:" modifier exists in both 1.4 and 1.5.
 std::wstring BuildSearchStringInternal(const esx::QueryRequest& req) {
-    if (!(req.flags & esx::ScopeToFolder) || req.folder.empty()) return req.query;
-
-    std::wstring scoped = L"path:\"" + req.folder + L"\"";
-    if (!req.query.empty()) {
-        scoped += L' ';
-        scoped += req.query;
+    std::wstring text;
+    if ((req.flags & esx::ScopeToFolder) && !req.folder.empty()) {
+        // "Cartella corrente" means direct children only (parent:); "Tutte le
+        // sottocartelle" adds IncludeSubfolders and uses recursive path:.
+        const wchar_t* function =
+            (req.flags & esx::IncludeSubfolders) ? L"path:" : L"parent:";
+        text = function + std::wstring(L"\"") + req.folder + L"\"";
     }
-    return scoped;
+    auto append = [&text](const std::wstring& term) {
+        if (term.empty()) return;
+        if (!text.empty()) text += L' ';
+        text += term;
+    };
+    append(req.query);
+    append(req.filter);
+    if (req.contentSearch && !req.query.empty()) {
+        append(L"content:" + req.query);
+    }
+    return text;
 }
 
 // ------------------------------------------------------------ reply parsing
@@ -131,7 +147,9 @@ bool ParseReply(const BYTE* base, DWORD size, DWORD requestFlags, DWORD flags, J
     const DWORD available = (size - sizeof(esx::ipc::List2)) / sizeof(esx::ipc::Item2);
     const DWORD count = list.numitems < available ? list.numitems : available;
 
-    job.rawCount = list.numitems;
+    // Advance by the items we actually parsed: if the reply was truncated,
+    // using numitems would skip the items we never received.
+    job.rawCount = count;
     job.totalCount = list.totitems;
 
     const auto* items = reinterpret_cast<const esx::ipc::Item2*>(base + sizeof(esx::ipc::List2));
@@ -145,7 +163,11 @@ bool ParseReply(const BYTE* base, DWORD size, DWORD requestFlags, DWORD flags, J
         const bool isFolder = (item.flags & esx::ipc::kItemFolder) != 0;
         if (isFolder && !(flags & esx::IncludeFolders)) continue;
 
-        if (item.data_offset <= sizeof(esx::ipc::List2) || item.data_offset >= size) continue;
+        // Payload starts after the List2 header and the Item2 array; a smaller
+        // value would point inside the array and create spurious rows.
+        const DWORD payloadStart =
+            sizeof(esx::ipc::List2) + count * sizeof(esx::ipc::Item2);
+        if (item.data_offset < payloadStart || item.data_offset >= size) continue;
 
         // Fields are packed in request_flags bit order, with no padding.
         DWORD pos = item.data_offset;
@@ -342,6 +364,7 @@ bool EnsureWorker() {
 bool RunOnePage(const std::wstring& search, DWORD offset, DWORD flags, DWORD maxResults,
                 std::vector<esx::QueryResultItem>& out, DWORD& rawCount, DWORD& totalCount,
                 std::string& error) {
+    std::lock_guard<std::mutex> queryLock(g_queryMutex);
     auto* job = new (std::nothrow) Job();
     if (!job) {
         error = "out of memory";
@@ -356,7 +379,7 @@ bool RunOnePage(const std::wstring& search, DWORD offset, DWORD flags, DWORD max
     }
 
     job->replyId =
-        kReplyBase | (static_cast<DWORD>(::InterlockedIncrement(&g_nextJobId)) & 0xFFFF);
+        kReplyBase | (static_cast<DWORD>(::InterlockedIncrement(&g_nextJobId)) & 0x000FFFFF);
     job->search = search;
     job->offset = offset;
     job->maxResults = maxResults;

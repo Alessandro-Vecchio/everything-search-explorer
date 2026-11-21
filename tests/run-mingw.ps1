@@ -36,7 +36,6 @@ if ($LASTEXITCODE -ne 0) { throw "windres failed ($LASTEXITCODE)" }
 Write-Host 'Building EverythingSearchNse.dll...'
 & $Gcc @common '-shared' '-I' "$root/shared" `
     "$root/nse/dllmain.cpp" "$root/nse/pidl.cpp" "$root/nse/bridge.cpp" "$root/nse/folder.cpp" `
-    "$root/nse/search_actions.cpp" `
     "$out/version.res" "$root/nse/nse.def" '-o' "$out/EverythingSearchNse.dll" `
     '-Wl,--no-insert-timestamp' `
     '-lshell32' '-lshlwapi' '-lole32' '-loleaut32' '-luuid' '-lpropsys' '-lgdi32'
