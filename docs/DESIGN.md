@@ -1,366 +1,364 @@
 # Design
 
-## Obiettivo
+> This document is partly historical. For the current state prefer `README.md`
+> and the source code.
 
-Rendere la ricerca di file in Esplora file veloce quanto Everything, senza
-rinunciare alla vista di Explorer (selezione multipla, menu contestuali nativi,
-drag & drop, proprietà, "Apri con", tab, cronologia).
+## Goal
 
-Non obiettivo: reimplementare un file manager né il motore di ricerca.
+Make file search in File Explorer as fast as Everything, without giving up
+Explorer's view (multi-selection, native context menus, drag & drop, properties,
+"Open with", tabs, history).
 
-## Perché serve una namespace extension
+Non-goal: reimplementing a file manager or a search engine.
 
-Explorer non espone un punto di estensione per fornire risultati a una ricerca.
-La vista dei risultati è una *search folder* popolata da Windows Search; le
-vecchie federated search connector (`.searchconnector-ms`) sono state rimosse
-da Windows 8.
+## Why a namespace extension is needed
 
-Un mod Windhawk può hookare codice, ma non esiste una funzione da hookare che
-"restituisca risultati" a DefView. L'unico modo supportato per mostrare item
-arbitrari in una vista Explorer standard è implementare una cartella shell
-(`IShellFolder`) e far navigare Explorer su di essa.
+Explorer exposes no extension point for feeding results into a search. The
+results view is a *search folder* populated by Windows Search; the old
+federated search connectors (`.searchconnector-ms`) were removed in Windows 8.
 
-## Architettura
+A Windhawk mod can hook code, but there is no function to hook that "returns
+results" to DefView. The only supported way to show arbitrary items in a
+standard Explorer view is to implement a shell folder (`IShellFolder`) and make
+Explorer navigate to it.
+
+## Architecture
 
 ```
-                 ┌───────────────────────────── explorer.exe ─────────────────────────────┐
- search box      │  Windhawk mod (PeekMessageW hook)                                       │
-   │             │      ├─ IShellWindows ─▶ IShellBrowser ─▶ location / active view         │
-   │             │      ├─ scrive %LOCALAPPDATA%\EverythingExplorerSearch\request.txt        │
-   │             │      └─ BrowseObject(shell:::{GUID}) oppure IShellView::Refresh()         │
-   │             │                                                                          │
-   │             │  EverythingSearchNse.dll  (in-proc COM, STA)                            │
-   │             │      IShellFolder2 / IPersistFolder2 / IShellFolderViewCB                 │
-   │             │      │                                                                   │
-   │             │      └─ EnumObjects ─▶ legge request.txt ─▶ bridge::Query ─┐              │
-   └─────────────┴───────────────────────────────────────────────────────────┼──────────────┘
-                                                                             │ WM_COPYDATA
-                                                                             │ QUERY2, thread
-                                                                             │ dedicato, timeout
-                                                                             ▼
-                                                                      Everything.exe
+                  ┌───────────────────────────── explorer.exe ─────────────────────────────┐
+  search box      │  Windhawk mod (PeekMessageW hook)                                       │
+    │             │      ├─ IShellWindows ─▶ IShellBrowser ─▶ location / active view         │
+    │             │      ├─ writes %LOCALAPPDATA%\EverythingExplorerSearch\request.txt       │
+    │             │      └─ BrowseObject(shell:::{GUID}) or IShellView::Refresh()            │
+    │             │                                                                          │
+    │             │  EverythingSearchNse.dll  (in-proc COM, STA)                            │
+    │             │      IShellFolder2 / IPersistFolder2 / IShellFolderViewCB                 │
+    │             │      │                                                                   │
+    │             │      └─ EnumObjects ─▶ reads request.txt ─▶ bridge::Query ─┐              │
+    └─────────────┴───────────────────────────────────────────────────────────┼──────────────┘
+                                                                              │ WM_COPYDATA
+                                                                              │ QUERY2, dedicated
+                                                                              │ thread, timeout
+                                                                              ▼
+                                                                       Everything.exe
 ```
 
-Tre artefatti distribuiti:
+Three distributed artifacts:
 
-| Artefatto | Chi lo installa | Note |
+| Artifact | Installed by | Notes |
 |---|---|---|
-| mod `.wh.cpp` | Windhawk (dalla sua UI o dal sito) | solo sorgente, nessun binario |
-| `EverythingSearchNse.dll` | la mod, su click esplicito | asset della release GitHub |
-| Everything | l'utente | prerequisito, dell'utente |
+| mod `.wh.cpp` | Windhawk (from its UI or site) | source only, no binary |
+| `EverythingSearchNse.dll` | the mod, on explicit click | GitHub release asset |
+| Everything | the user | prerequisite, owned by the user |
 
-### Perché l'IPC diretto e non `Everything64.dll`
+### Why direct IPC and not `Everything64.dll`
 
-L'SDK di voidtools non è un client "sottile" riutilizzabile con sicurezza
-dentro la shell: `src/Everything.c` usa uno stato globale protetto da
-`CRITICAL_SECTION` e `Everything_QueryW(TRUE)` attende
-`WaitForSingleObject(..., INFINITE)`. Caricarlo in `explorer.exe` significa che
-un Everything occupato o elevato blocca il thread chiamante e, con esso, parte
-della shell. Inoltre servirebbe scaricare l'SDK a ogni build.
+voidtools' SDK is not a "thin" client that can be safely reused inside the
+shell: `src/Everything.c` uses global state protected by a `CRITICAL_SECTION`
+and `Everything_QueryW(TRUE)` waits with `WaitForSingleObject(..., INFINITE)`.
+Loading it into `explorer.exe` means a busy or elevated Everything blocks the
+calling thread and, with it, part of the shell. It would also require
+downloading the SDK at every build.
 
-Il NSE parla quindi il protocollo IPC documentato (`QUERY2` in `WM_COPYDATA`
-sulla finestra `EVERYTHING_TASKBAR_NOTIFICATION`) direttamente, con
-`shared/everything_ipc.h` come unica dipendenza (una ventina di righe, nessun
-codice di terzi caricato nel processo di Explorer).
+The NSE therefore speaks the documented IPC protocol directly (`QUERY2` in
+`WM_COPYDATA` on the `EVERYTHING_TASKBAR_NOTIFICATION` window), with
+`shared/everything_ipc.h` as its only dependency (about twenty lines, no
+third-party code loaded into the Explorer process).
 
-## Trasporto della query
+## Query transport
 
 ### request.txt
 
-`%LOCALAPPDATA%\EverythingExplorerSearch\request.txt`, UTF-8, `chiave=valore`
-una per riga (split sulla **prima** `=`):
+`%LOCALAPPDATA%\EverythingExplorerSearch\request.txt`, UTF-8, one
+`key=value` pair per line (split on the **first** `=`):
 
 ```
 seq=123456789
 max=0
 flags=3
-folder=C:\Users\<utente>\Documenti
-query=fattura 2026
+folder=C:\Users\<user>\Documents
+query=invoice 2026
 ```
 
-- `seq`: solo per rilevare modifiche; il NSE confronta anche `query` e `folder`.
-- `flags`: bit 0 = scoped alla cartella.
-- Scrittura atomica: file temporaneo + `MoveFileEx(MOVEFILE_REPLACE_EXISTING)`.
+- `seq`: only for change detection; the NSE also compares `query` and `folder`.
+- `flags`: bit 0 = scoped to the folder.
+- Atomic write: temporary file + `MoveFileEx(MOVEFILE_REPLACE_EXISTING)`.
 
-Il file è deliberatamente stupido: sopravvive a riavvii di Explorer e rende
-banale il testing da PowerShell.
+The file is deliberately dumb: it survives Explorer restarts and makes testing
+from PowerShell trivial.
 
-### IPC con Everything
+### IPC with Everything
 
-Dal thread chiamante non si tocca mai `WM_COPYDATA`:
+The calling thread never touches `WM_COPYDATA`:
 
-- un solo thread worker possiede una finestra `HWND_MESSAGE`;
-- `PostMessage(worker, ...)` con un `Job` che porta `replyId`, pagina
-  (`offset`), `max_results` e i flag;
-- il worker invia con `SendMessageTimeoutW(..., SMTO_ABORTIFHUNG, 4000 ms)`;
-- la risposta arriva in `WM_COPYDATA` e viene accettata **solo** se
-  `dwData == job->replyId` (base `0x45500000` + contatore a 20 bit), così una
-  risposta in ritardo di una query abbandonata non viene scambiata per quella
-  corrente;
-- il chiamante attende l'evento di completamento con timeout 5000 ms;
-- il modulo resta pinnato (`g_cRefDll`) finché il worker è vivo, perché COM non
-  può scaricare una DLL che ha ancora una finestra e un thread attivi.
+- a single worker thread owns a `HWND_MESSAGE` window;
+- `PostMessage(worker, ...)` with a `Job` carrying `replyId`, page (`offset`),
+  `max_results` and flags;
+- the worker sends with `SendMessageTimeoutW(..., SMTO_ABORTIFHUNG, 4000 ms)`;
+- the reply arrives in `WM_COPYDATA` and is accepted **only** if
+  `dwData == job->replyId` (base `0x45500000` + 20-bit counter), so a late reply
+  from an abandoned query cannot be mistaken for the current one;
+- the caller waits on the completion event with a 5000 ms timeout;
+- the module stays pinned (`g_cRefDll`) while the worker is alive, because COM
+  cannot unload a DLL that still has a window and a thread active.
 
-Layout e semantica del protocollo sono documentati in
-`shared/everything_ipc.h`. Due dettagli verificati sul campo (Everything
-1.5.0.1423) e facili da sbagliare:
+The layout and semantics of the protocol are documented in
+`shared/everything_ipc.h`. Three details verified in the field (Everything
+1.5.0.1423) and easy to get wrong:
 
-- `Item2` è `{DWORD flags; DWORD data_offset;}`, `data_offset` è relativo
-  all'inizio della `List2`;
-- i campi sono impacchettati nell'ordine dei bit di `request_flags`, senza
-  padding; le stringhe sono `DWORD` (numero di caratteri) + `(len + 1)` WCHAR;
-- `PATH` è la **cartella contenitrice**, non il percorso completo: va unito a
-  `NAME` (gestendo la root `C:\` senza aggiungere un separatore).
+- `Item2` is `{DWORD flags; DWORD data_offset;}`, `data_offset` is relative to
+  the start of `List2`;
+- fields are packed in the order of the `request_flags` bits, without padding;
+  strings are `DWORD` (character count) + `(len + 1)` WCHARs;
+- `PATH` is the **containing folder**, not the full path: it must be joined with
+  `NAME` (handling the `C:\` root without adding a separator).
 
 ### Paging
 
-Everything tronca la lista *prima* che il NSE possa scartare le cartelle o i
-drive, quindi una cartella con molte sottocartelle restituirebbe zero file
-(verificato: `C:\Windows *.exe` restituiva 0 risultati). Il bridge pagina:
-`kBatchSize = 2048` risultati grezzi per giro, fino a `kMaxBatches = 192`
-(393.216 grezzi), fermandosi quando il totale richiesto è raggiunto.
+Everything truncates the list *before* the NSE can discard folders or drives,
+so a folder with many subfolders would return zero files (verified:
+`C:\Windows *.exe` returned 0 results). The bridge pages:
+`kBatchSize = 2048` raw results per round, up to `kMaxBatches = 192`
+(393,216 raw), stopping when the requested total is reached.
 
-## Formato dei PIDL
+## PIDL format
 
-Un PIDL è una sequenza di `SHITEMID` terminata da un elemento di lunghezza 0.
-Ogni `SHITEMID` inizia con `USHORT cb` (lunghezza totale dell'elemento, campo
-compreso).
+A PIDL is a sequence of `SHITEMID` terminated by a zero-length element. Each
+`SHITEMID` starts with `USHORT cb` (total length of the element, field included).
 
-Root della cartella (8 byte, deterministico):
+Folder root (8 bytes, deterministic):
 
 ```
 06 00 | 'E' 00 'S' 00 | 00 00
- cb=6      magic        terminatore
+ cb=6      magic        terminator
 ```
 
-Item figlio (relativo alla root, come richiede il contratto shell):
+Child item (relative to the root, as required by the shell contract):
 
 ```
-[cb] | UTF-16 path assoluto + NUL
+[cb] | UTF-16 absolute path + NUL
 ```
 
-`DefView` combina la root con il PIDL relativo per costruire il PIDL assoluto;
-per questo `EnumObjects` **non** deve restituire la root nel PIDL del figlio.
+`DefView` combines the root with the relative PIDL to build the absolute PIDL;
+for this reason `EnumObjects` **must not** return the root in the child PIDL.
 
-`GetPidlPath` accetta entrambe le forme (relativa e, per difesa, root+item) e
-valida il risultato con `PathIsAbsoluteW` per non interpretare come path PIDL
-estranei.
+`GetPidlPath` accepts both forms (relative and, defensively, root+item) and
+validates the result with `PathIsAbsoluteW` so foreign PIDLs are not interpreted
+as paths.
 
-## Delega al shell ("proxy folder")
+## Delegation to the shell ("proxy folder")
 
-Ogni item è un file reale. Il NSE non reimplementa nulla:
+Every item is a real file. The NSE reimplements nothing:
 
-| Metodo | Implementazione |
+| Method | Implementation |
 |---|---|
-| `EnumObjects` | elenca i path in cache, crea PIDL relativi |
-| `GetDisplayNameOf` | `FORPARSING`/`FORADDRESSBAR` → path reale, altrimenti nome file |
-| `GetAttributesOf` | `SHParseDisplayName` per gli attributi richiesti, con cache per item per evitare chiamate ripetute durante selezione e drag |
-| `GetUIObjectOf` | `IContextMenu*` → oggetto nativo da `IShellItemArray::BindToHandler(BHID_SFUIObject)`; `IDataObject` → `BHID_DataObject`; altro → `BHID_SFUIObject` |
-| `GetDetailsOf` | 4 colonne (Name, Size, Type, Date modified) dalla cache |
-| `CompareIDs` | nome (`StrCmpLogicalW`), size, data |
-| `BindToObject` | `E_NOTIMPL` (vista piatta read-only) |
+| `EnumObjects` | lists cached paths, creates relative PIDLs |
+| `GetDisplayNameOf` | `FORPARSING`/`FORADDRESSBAR` → real path, otherwise file name |
+| `GetAttributesOf` | `SHParseDisplayName` for the requested attributes, with per-item cache to avoid repeated calls during selection and drag |
+| `GetUIObjectOf` | `IContextMenu*` → native object from `IShellItemArray::BindToHandler(BHID_SFUIObject)`; `IDataObject` → `BHID_DataObject`; others → `BHID_SFUIObject` |
+| `GetDetailsOf` | 4 columns (Name, Size, Type, Date modified) from the cache |
+| `CompareIDs` | name (`StrCmpLogicalW`), size, date |
+| `BindToObject` | `E_NOTIMPL` (flat read-only view) |
 | `SetNameOf` | `E_NOTIMPL` |
-| `CreateViewObject` | `SHCreateShellFolderView` con callback per conteggio e modalità della vista |
+| `CreateViewObject` | `SHCreateShellFolderView` with callbacks for count and view mode |
 
-`GetUIObjectOf` è il punto che fa funzionare tutto: menu contestuale, "Apri
-con", proprietà, copia, drag & drop e icone arrivano dal vero item filesystem.
+`GetUIObjectOf` is the point that makes everything work: context menus, "Open
+with", properties, copy, drag & drop and icons all come from the real filesystem
+item.
 
-## Installer e pannello della mod
+## Mod installer and panel
 
-La mod non può portare con sé un binario (viene compilata da sorgente dentro
-Windhawk), quindi fa da installatore:
+The mod cannot carry a binary (it is compiled from source inside Windhawk), so
+it acts as an installer:
 
-- `Ctrl+Shift+F` apre il pannello; `Ctrl+F` apre il pannello solo se il
-  componente non è utilizzabile o Everything non è in esecuzione (una ricerca
-  su una cartella inesistente sarebbe solo un errore);
-- il pannello mostra: stato di Everything (assente / irraggiungibile per UIPI /
-  versione), stato del componente (non installato / DLL mancante / versione
-  attesa);
-- **Install** prende il `EverythingSearchNse*.dll` più recente in Download,
-  **Choose file** apre `IFileOpenDialog`;
-- la copia è validata con `LoadLibraryEx(LOAD_LIBRARY_AS_DATAFILE)` prima di
-  registrare il CLSID: un file sbagliato non finisce nel registro;
-- la registrazione è `HKCU\Software\Classes\CLSID\{GUID}` +
-  `HKCU\Software\EverythingExplorerSearch` (`Version`, `Path`), con
-  `ThreadingModel=Apartment` e `ShellFolder\Attributes = SFGAO_FOLDER`;
-- **Uninstall** cancella le chiavi e il file (se è in uso, `MOVEFILE_DELAY_UNTIL_REBOOT`);
-- **Download** apre soltanto la pagina delle release: nessun download
-  automatico, per scelta.
+- `Ctrl+Shift+F` opens the panel; `Ctrl+F` opens it only when the component is
+  unusable or Everything is not running (a search on a nonexistent folder would
+  only be an error);
+- the panel shows: Everything status (absent / unreachable due to UIPI /
+  version), component status (not installed / DLL missing / expected version);
+- **Install** takes the newest `EverythingSearchNse*.dll` in Downloads,
+  **Choose file** opens `IFileOpenDialog`;
+- the copy is validated with `LoadLibraryEx(LOAD_LIBRARY_AS_DATAFILE)` before
+  registering the CLSID: a wrong file never reaches the registry;
+- registration is `HKCU\Software\Classes\CLSID\{GUID}` +
+  `HKCU\Software\EverythingExplorerSearch` (`Version`, `Path`), with
+  `ThreadingModel=Apartment` and `ShellFolder\Attributes = SFGAO_FOLDER`;
+- **Uninstall** deletes the keys and the file (if in use,
+  `MOVEFILE_DELAY_UNTIL_REBOOT`);
+- **Download** only opens the releases page: no automatic download, by design.
 
-La DLL vive in `%LOCALAPPDATA%\EverythingExplorerSearch\nse\<versione>\`: una
-DLL già mappata da Explorer non si può sovrascrivere, quindi ogni versione ha la
-sua cartella e l'aggiornamento è una copia nuova + rewrite della chiave.
+> The `Ctrl+Shift+F` panel described above is historical: the current mod does
+> not ship it. Installation is done with `install.ps1`.
 
-### Build e install da sorgente
+The DLL lives in `%LOCALAPPDATA%\EverythingExplorerSearch\nse\<version>\`: a DLL
+already mapped by Explorer cannot be overwritten, so each version has its own
+folder and an update is a fresh copy plus a registry rewrite.
 
-La mod si compila anche fuori dall'editor: `mod\build-mod.ps1` usa MSVC x64.
-Le intestazioni C++/WinRT non sono committate: `mod\regenerate-winrt.ps1` le
-ricrea da Windows SDK e NuGet (254 file, ~30 MB) quando mancano. Individua
-automaticamente `vcvars64.bat` (BuildTools/Enterprise/Professional/Community)
-e la `windhawk.lib` dell'engine Windhawk installato (versione più alta), poi
-passa entrambi i percorsi a `mod\build-mod.cmd` tramite variabili d'ambiente:
-nessun numero di versione è hardcoded. Legge `@version` dal sorgente per
-nominare la DLL in `dist\windhawk`.
+### Build and install from source
 
-`install-mod.ps1` chiude il cerchio per lo sviluppo: compila (o riusa
-`-SkipBuild`), copia la DLL in `Engine\Mods\64`, allinea il sorgente in
-`ModsSource`, scrive
-`HKLM\SOFTWARE\Windhawk\Engine\Mods\local@everything-explorer-search` con
-`Include`/`Exclude` presi dai metadati del `.wh.cpp`, `Architecture=x86-64`,
-`Disabled=0` e i due setting predefiniti (`maxResults=0`,
-`scopeToFolder=1`): senza chiave `Settings` l'engine leggerebbe 0 e la ricerca
-non restituirebbe nulla. Poi riavvia l'engine; Explorer non viene terminato,
-perché la mod viene iniettata alla finestra successiva.
+The mod can also be built outside the editor: `mod\build-mod.ps1` uses MSVC x64.
+The C++/WinRT headers are not committed: `mod\regenerate-winrt.ps1` recreates
+them from the Windows SDK and NuGet (254 files, ~30 MB) when missing. It
+automatically discovers `vcvars64.bat` (BuildTools/Enterprise/Professional/
+Community) and the `windhawk.lib` of the installed Windhawk engine (highest
+version), then passes both paths to `mod\build-mod.cmd` through environment
+variables: no version number is hardcoded. It reads `@version` from the source
+to name the DLL in `dist\windhawk`.
 
-`uninstall-mod.ps1` mette prima `Disabled=1` (una DLL ancora mappata non deve
-essere ricaricata), poi rimuove chiave, binari e sorgente. Il componente shell
-resta installato: per quello c'è `uninstall.ps1`.
+`install-mod.ps1` closes the loop for development: it builds (or reuses
+`-SkipBuild`), copies the DLL to `Engine\Mods\64`, aligns the source in
+`ModsSource`, writes
+`HKLM\SOFTWARE\Windhawk\Engine\Mods\local@everything-explorer-search` with
+`Include`/`Exclude` taken from the `.wh.cpp` metadata, `Architecture=x86-64`,
+`Disabled=0` and the two default settings (`maxResults=0`,
+`scopeToFolder=1`): without the `Settings` key the engine would read 0 and the
+search would return nothing. It then restarts the engine; Explorer is not
+terminated, because the mod is injected into the next window.
 
-## Blocco della ricerca nativa
+`uninstall-mod.ps1` first sets `Disabled=1` (a still-mapped DLL must not be
+reloaded), then removes the key, binaries and source. The shell component stays
+installed: use `uninstall.ps1` for that.
 
-Explorer avvia la search-as-you-type appena si digita nella casella e naviga
-verso la search folder di Windows Search (`{04731B67-D933-450A-90E6-4ACD2E9408FE}`).
-Per restare nella vista cartella fino a Invio la mod blocca quella navigazione
-su tre punti, senza toccare il testo della casella:
+## Native search blocking
 
-1. `SHParseDisplayName` — un nome `search-ms:`/`search:` viene risolto come
-   cartella di partenza (`g_searchOrigin`), così la vista non cambia;
-2. `ShellExecuteExW` / `ShellExecuteW` — un moniker `search-ms:` viene
-   dichiarato eseguito senza aprire nulla;
-3. `IShellBrowser::BrowseObject` (slot 11 della vtable, ottenuta da
-   `IShellWindows`) — un PIDL che punta alla search folder di Windows viene
-   dichiarato navigato senza navigare. I PIDL della nostra cartella sono
-   esclusi esplicitamente.
+Explorer starts search-as-you-type as soon as you type in the box and navigates
+to the Windows Search search folder (`{04731B67-D933-450A-90E6-4ACD2E9408FE}`).
+To stay in the folder view until Enter, the mod blocks that navigation at three
+points, without touching the box text:
 
-Le proprie chiamate della mod sono esentate con `tls_internalNavigation`,
-altrimenti il blocco si applicherebbe anche alla navigazione verso la cartella
-virtuale. Le build `-Trace` loggano in `%TEMP%\esx-mod.log` quale hook è stato
-colpito: se una build futura di Windows usa un quarto ingresso, il log lo
-mostra e basta aggiungerlo.
+1. `SHParseDisplayName` — a `search-ms:`/`search:` name is resolved as the
+   starting folder (`g_searchOrigin`), so the view does not change;
+2. `ShellExecuteExW` / `ShellExecuteW` — a `search-ms:` moniker is declared
+   executed without opening anything;
+3. `IShellBrowser::BrowseObject` (vtable slot 11, obtained from
+   `IShellWindows`) — a PIDL pointing to the Windows search folder is declared
+   navigated without navigating. Our folder's PIDLs are explicitly excluded.
 
-## Flusso di refresh
+The mod's own calls are exempted with `tls_internalNavigation`, otherwise the
+block would also apply to navigation to our virtual folder. `-Trace` builds log
+to `%TEMP%\esx-mod.log` which hook was hit: if a future Windows build uses a
+fourth entry point, the log shows it and it can simply be added.
 
-1. Il mod scrive `request.txt`.
-2. Se la finestra è già sulla cartella virtuale → `IShellView::Refresh()`.
-   Altrimenti → `IShellBrowser::BrowseObject(pidl, SBSP_SAMEBROWSER)`.
-   Il PIDL viene da `SHParseDisplayName("shell:::{GUID}")` e, se il parsing
-   fallisce, da `CoCreateInstance` + `IPersistFolder2::GetCurFolder` sulla DLL.
-3. `Refresh` fa ri-enumerare DefView.
-4. `EnumObjects` legge `request.txt`; se `(seq, query, folder, max)` non è
-   cambiato usa la cache, altrimenti interroga Everything.
-5. `MessageSFVCB` gestisce conteggio e modalità della vista e lascia a DefView
-   il comportamento predefinito per il resto (incluso il re-enumero).
+## Refresh flow
 
-## Threading e lifetime
+1. The mod writes `request.txt`.
+2. If the window is already on the virtual folder → `IShellView::Refresh()`.
+   Otherwise → `IShellBrowser::BrowseObject(pidl, SBSP_SAMEBROWSER)`.
+   The PIDL comes from `SHParseDisplayName("shell:::{GUID}")` and, if parsing
+   fails, from `CoCreateInstance` + `IPersistFolder2::GetCurFolder` on the DLL.
+3. `Refresh` makes DefView re-enumerate.
+4. `EnumObjects` reads `request.txt`; if `(seq, query, folder, max)` did not
+   change it uses the cache, otherwise it queries Everything.
+5. `MessageSFVCB` handles count and view mode and leaves the rest to DefView's
+   default behaviour (including the re-enumeration).
 
-- Il NSE è in-proc, apartment-threaded (`ThreadingModel=Apartment`).
-- `IShellFolder` può essere chiamato da più thread: la cache è protetta da
-  `std::mutex`; l'IPC è serializzato dal worker.
-- Il thread chiamante non attende mai più di ~5 s per pagina; il worker non
-  attende mai più di 4 s Everything. Le pagine lazy vengono caricate fuori dal
-  mutex della cartella, quindi gli altri thread shell non restano bloccati.
-- `g_cRefDll` conta oggetti, `LockServer` **e** la vita del worker.
-- Nessuna eccezione C++ deve attraversare il confine COM: le API chiamate non
-  lanciano; le allocazioni usano `new (std::nothrow)`.
+## Threading and lifetime
 
-## Rischi noti
+- The NSE is in-proc, apartment-threaded (`ThreadingModel=Apartment`).
+- `IShellFolder` can be called from multiple threads: the cache is protected by
+  `std::mutex`; IPC is serialized by the worker.
+- The calling thread never waits more than ~5 s per page; the worker never
+  waits more than 4 s for Everything. Lazy pages are loaded outside the folder
+  mutex, so other shell threads are not blocked.
+- `g_cRefDll` counts objects, `LockServer` **and** the worker's lifetime.
+- No C++ exception must cross the COM boundary: the APIs called do not throw;
+  allocations use `new (std::nothrow)`.
 
-1. **Contratto shell**: il caso più delicato è la combinazione
-   root+item da parte di DefView. Se qualche build di Windows passa PIDL in
-   forme inattese, `GetPidlPath` va esteso (log + test).
-2. **Tab di Windows 11**: `IShellWindows` può restituire più browser per la
-   stessa finestra; il matching usa visibilità + focus, non è deterministico al
-   100%.
-3. **File inesistenti**: Everything può restituire path cancellati. Il NSE li
-   mostra comunque (nessuno `stat` per voce, per non rallentare); Explorer li
-   segnala come mancanti.
-4. **Crash del NSE = crash di Explorer**: niente `try/catch` attorno a codice
-   sconosciuto, nessun hook dentro il NSE, nessuna chiamata a `Everything64.dll`.
-5. **UIPI**: se Everything gira elevato, un processo non elevato non può
-   inviargli `WM_COPYDATA`. Il pannello lo rileva (finestra presente ma nessuna
-   risposta a `WM_USER`) e chiede di disattivare l'elevazione.
-6. **Versione del protocollo**: `QUERY2` esiste da Everything 1.4.1. Versioni
-   più vecchie non sono supportate.
+## Known risks
 
-## Stato dei test
+1. **Shell contract**: the most delicate case is DefView combining root+item.
+   If some Windows build passes PIDLs in unexpected forms, `GetPidlPath` must be
+   extended (log + test).
+2. **Windows 11 tabs**: `IShellWindows` can return multiple browsers for the
+   same window; matching uses visibility + focus and is not 100% deterministic.
+3. **Nonexistent files**: Everything can return deleted paths. The NSE shows
+   them anyway (no per-item `stat`, to avoid slowing down); Explorer reports
+   them as missing.
+4. **NSE crash = Explorer crash**: no `try/catch` around unknown code, no hooks
+   inside the NSE, no calls to `Everything64.dll`.
+5. **UIPI**: if Everything runs elevated, a non-elevated process cannot send it
+   `WM_COPYDATA`. The panel detects this (window present but no reply to
+   `WM_USER`) and asks to disable elevation.
+6. **Protocol version**: `QUERY2` exists since Everything 1.4.1. Older versions
+   are not supported.
 
-Verificato con `tests/run-mingw.ps1` (MinGW, fuori processo, nessun Explorer
-coinvolto):
+## Test status
 
-- `*.cpp` nel repository → file reali con size e date corrette;
-- `C:\Windows` + `*.exe` → 50 file (prima del paging: 0);
-- `IContextMenu`/`IContextMenu3` e `IDataObject` su un risultato → `S_OK`;
-- `CF_HDROP` e `Shell ID List Array` → `S_OK`, con il path giusto nel `DROPFILES`;
-- `GetDetailsEx` → `PKEY_ItemTypeText` = "File di origine C++", `PKEY_Size` = byte;
-- la mod compila con `-Wall -Wextra` e la sua versione coincide con `nse/version.h`.
+Verified with `tests/run-mingw.ps1` (MinGW, out-of-process, no Explorer
+involved):
 
-Verificato dal vivo in `explorer.exe` (Windows 11 x64, Everything 1.5.0.1423):
+- `*.cpp` in the repository → real files with correct size and dates;
+- `C:\Windows` + `*.exe` → 50 files (before paging: 0);
+- `IContextMenu`/`IContextMenu3` and `IDataObject` on a result → `S_OK`;
+- `CF_HDROP` and `Shell ID List Array` → `S_OK`, with the right path in
+  `DROPFILES`;
+- `GetDetailsEx` → `PKEY_ItemTypeText` = "C++ Source File", `PKEY_Size` = bytes;
+- the mod builds with `-Wall -Wextra` and its version matches `nse/version.h`.
 
-- `install.ps1` → DLL caricata da
-  `%LOCALAPPDATA%\EverythingExplorerSearch\nse\<versione>\EverythingSearchNse.dll`;
-- `shell::{GUID}` apre una finestra la cui vista contiene i file reali del
-  repository (letti con `Shell.Application`), senza crash né eventi WER;
+Verified live in `explorer.exe` (Windows 11 x64, Everything 1.5.0.1423):
+
+- `install.ps1` → DLL loaded from
+  `%LOCALAPPDATA%\EverythingExplorerSearch\nse\<version>\EverythingSearchNse.dll`;
+- `shell::{GUID}` opens a window whose view contains the repository's real
+  files (read with `Shell.Application`), with no crash or WER events;
 - `IFolderView2::GetViewModeAndIconSize` → `8` (`FVM_CONTENT`);
-- `IFolderView2::InvokeVerbOnSelection(NULL)` (equivalente del doppio clic) →
-  il file viene aperto dal programma associato;
-- `IShellBrowser::BrowseObject` su una finestra esistente naviga **in place**
-  (nessuna seconda finestra), anche partendo da "Questo PC";
-- il titolo osservato è il nome semplice **"Everything Search"**.
+- `IFolderView2::InvokeVerbOnSelection(NULL)` (equivalent of double click) →
+  the file is opened by the associated program;
+- `IShellBrowser::BrowseObject` on an existing window navigates **in place**
+  (no second window), even starting from "This PC";
+- the observed title is the simple name **"Everything Search"**.
 
-Bug trovati e corretti in questo test:
+Bugs found and fixed during this test:
 
-1. **`GetDetailsOf` fuori range**: rispondeva `S_FALSE` (successo) per le
-   intestazioni di colonna oltre le 4 disponibili, quindi DefView continuava a
-   incrementare `iColumn` all'infinito (osservate 275.000 chiamate in pochi
-   secondi). Il contratto è `E_INVALIDARG`; vale sia per i titoli delle colonne
-   sia per le righe.
-2. **`explorer.exe shell:::{GUID}`** non apre la cartella e ripiega su
-   "Documenti": serve `SHParseDisplayName` + `ShellExecuteEx` con
-   `SEE_MASK_INVOKEIDLIST|SEE_MASK_IDLIST`, oppure `BrowseObject` dall'interno.
-3. `LocationURL` è vuoto per una namespace extension: per capire se la finestra
-   mostra già la cartella, `NavigateWindow` confronta
-   `IPersist::GetClassID` della vista attiva con il nostro CLSID e solo allora
-   usa `IShellView::Refresh()`.
-4. **Menu contestuale**: costruirlo con `SHCreateDefaultContextMenu` +
-   `DEFCONTEXTMENU(psf=questo)`, o con un wrapper che restituiva una sola voce
-   "Open" per `CMF_DEFAULTONLY`, faceva crashare `SHELL32.dll` al clic destro.
-   La shell reale, misurata con `tests/context_menu_probe.cpp`, **ignora**
-   `CMF_DEFAULTONLY` e restituisce sempre il menu completo: il contratto giusto
-   è delegare a `IShellItemArray::BindToHandler(BHID_SFUIObject)`, senza wrapper.
-5. **Data object vuoto**: `SHCreateDataObject(nullptr, ...)` non esponeva nessun
-   formato; ora si usa `SHCreateShellItemArrayFromIDLists` +
-   `BHID_DataObject`.
-6. **PIDL iniziale**: `SHParseDisplayName("shell:::{GUID}")` può fallire con
-   `0x80070003` subito dopo il riavvio di Explorer mentre `CoCreateInstance`
-   riesce; la mod ripiega su `IPersistFolder2::GetCurFolder` della DLL.
+1. **`GetDetailsOf` out of range**: it returned `S_FALSE` (success) for column
+   headers beyond the 4 available, so DefView kept incrementing `iColumn`
+   forever (275,000 calls observed in a few seconds). The contract is
+   `E_INVALIDARG`; this applies both to column titles and rows.
+2. **`explorer.exe shell:::{GUID}`** does not open the folder and falls back to
+   "Documents": you need `SHParseDisplayName` + `ShellExecuteEx` with
+   `SEE_MASK_INVOKEIDLIST|SEE_MASK_IDLIST`, or `BrowseObject` from inside.
+3. `LocationURL` is empty for a namespace extension: to tell whether the window
+   already shows the folder, `NavigateWindow` compares `IPersist::GetClassID`
+   of the active view with our CLSID and only then uses `IShellView::Refresh()`.
+4. **Context menu**: building it with `SHCreateDefaultContextMenu` +
+   `DEFCONTEXTMENU(psf=this)`, or with a wrapper returning a single "Open" item
+   for `CMF_DEFAULTONLY`, crashed `SHELL32.dll` on right click. The real shell,
+   measured with `tests/context_menu_probe.cpp`, **ignores** `CMF_DEFAULTONLY`
+   and always returns the full menu: the correct contract is to delegate to
+   `IShellItemArray::BindToHandler(BHID_SFUIObject)`, without a wrapper.
+5. **Empty data object**: `SHCreateDataObject(nullptr, ...)` exposed no formats;
+   use `SHCreateShellItemArrayFromIDLists` + `BHID_DataObject`.
+6. **Initial PIDL**: `SHParseDisplayName("shell:::{GUID}")` can fail with
+   `0x80070003` right after an Explorer restart while `CoCreateInstance`
+   succeeds; the mod falls back to `IPersistFolder2::GetCurFolder` of the DLL.
 
 ## Roadmap
 
-- **v1.1** – input senza popup: `ParseDisplayName` accetta
-  `::{GUID}\<query>` così la barra degli indirizzi diventa il campo di ricerca.
-- **v1.2** – aggiornamento live con debounce (Refresh mirato, selezione
-  preservata), `IncludeFolders=on`.
-- **v1.3** (fatto) – `MapColumnToSCID` + `GetDetailsEx` per la vista Contenuto,
+- **v1.1** – popup-free input: `ParseDisplayName` accepts
+  `::{GUID}\<query>` so the address bar becomes the search field.
+- **v1.2** – live update with debounce (targeted Refresh, selection preserved),
+  `IncludeFolders=on`.
+- **v1.3** (done) – `MapColumnToSCID` + `GetDetailsEx` for the Content view,
   `SFVM_DEFVIEWMODE = FVM_CONTENT`.
-- **v1.4** – localizzazione delle intestazioni (`GetDetailsOf` in inglese),
-  anteprime (thumbnail) per immagini/video.
-- **v2** – `BindToObject` per navigare nelle cartelle risultato; `IShellFolder2`
-  completo; virtualizzazione oltre 5.000 risultati.
-- **Distribuzione** – release GitHub con DLL versionata + SHA256, firma del
-  binario, draft della mod su windhawk.net.
+- **v1.4** – column localization (`GetDetailsOf` is in English),
+  thumbnails for images/video.
+- **v2** – `BindToObject` to navigate into result folders; full `IShellFolder2`;
+  virtualization beyond 5,000 results.
+- **Distribution** – GitHub release with versioned DLL + SHA256, binary signing,
+  draft of the mod on windhawk.net.
 
-## Checklist di test
+## Test checklist
 
-1. `tests/run-mingw.ps1`: la catena NSE → IPC → Everything funziona? ✅
-2. `esx.ps1`: la cartella virtuale si apre e mostra i file? ✅
-3. Menu contestuale su un risultato: "Apri", "Apri percorso file", proprietà. ✅
-   (probe; da riconfermare a mano dopo il fix del crash)
-4. Drag & drop di un risultato su un'altra app. ⏳ (formati verificati, da
-   provare col mouse)
-5. Doppio clic su un file (default verb) e su una cartella (atteso: nessun
-   effetto in v1). ✅ file; cartelle non incluse in v1.
-6. Cartella con accenti/spazi; query con accenti; query vuota.
-7. Everything chiuso → messaggio di errore, nessun crash di Explorer.
-8. Due finestre, una scoped su `C:\Windows`, una su `D:\`: nessuna interferenza.
-9. `Ctrl+F` con tab multiple, con una finestra non attiva, con un dialog aperto.
-10. Disinstallazione a caldo: `DllCanUnloadNow` e rimozione chiavi.
+1. `tests/run-mingw.ps1`: does the NSE → IPC → Everything chain work? ✅
+2. `esx.ps1`: does the virtual folder open and show the files? ✅
+3. Context menu on a result: "Open", "Open file location", properties. ✅
+   (probe; to be confirmed by hand after the crash fix)
+4. Drag & drop of a result onto another app. ⏳ (formats verified, to be tested
+   with the mouse)
+5. Double click on a file (default verb) and on a folder (expected: no effect
+   in v1). ✅ files; folders not included in v1.
+6. Folder with accents/spaces; query with accents; empty query.
+7. Everything closed → error message, no Explorer crash.
+8. Two windows, one scoped to `C:\Windows`, one to `D:\`: no interference.
+9. `Ctrl+F` with multiple tabs, with a non-active window, with a dialog open.
+10. Hot uninstall: `DllCanUnloadNow` and key removal.

@@ -1,91 +1,94 @@
-# Direct XAML Replacement (mod ufficiale 0.5)
+# Direct XAML Replacement (official mod 0.5)
 
-## Stato
+## Status
 
-Implementazione ufficiale in `mod/everything-explorer-search.wh.cpp` (ID Windhawk
-`local@everything-explorer-search`). Sostituzione diretta del controllo di ricerca
-nativo di Explorer, senza overlay Win32 e senza `DesktopWindowXamlSource`.
-Verificata su finestre `/separate`, `Ctrl+N` e finestre aperte dalla taskbar:
+Official implementation in `mod/everything-explorer-search.wh.cpp` (Windhawk ID
+`local@everything-explorer-search`). Direct replacement of Explorer's native
+search control, with no Win32 overlay and no `DesktopWindowXamlSource`.
+Verified on `/separate` windows, `Ctrl+N` and windows opened from the taskbar:
 
-- layout copiato dal controllo nativo (`Grid.Row/Column`, `RowSpan/ColumnSpan`,
-  `Margin`, allineamenti, vincoli dimensionali);
-- posizione corretta a destra della barra degli indirizzi e adattamento al resize;
-- digitazione, `Ctrl+F`/`Ctrl+E`/`F3`, Backspace, Esc e Invio funzionanti;
-- Invio produce `request.txt` e navigazione nella cartella NSE con scope corretto;
-- focus mantenuto dopo la navigazione;
-- zero dump nelle prove finali.
+- layout copied from the native control (`Grid.Row/Column`, `RowSpan/ColumnSpan`,
+  `Margin`, alignments, size constraints);
+- correct position to the right of the address bar, adapts to resize;
+- typing, `Ctrl+F`/`Ctrl+E`/`F3`, Backspace, Esc and Enter working;
+- Enter produces `request.txt` and navigation to the NSE folder with the
+  correct scope;
+- focus preserved after navigation;
+- no dumps in the final tests.
 
-## Architettura
+## Architecture
 
-1. **Observer passivo** (`kObserverOnly = true`): `OnVisualTreeChange` rileva
-   `FileExplorerSearchBox` senza toccare il visual tree. Il vecchio percorso
-   `CreateSession`/`DesktopWindowXamlSource` resta disattivato.
-2. **Canale asincrono**: una message-only window (`HWND_MESSAGE`) viene creata
-   nel costruttore del watcher, sul thread owner di `IVisualTreeService3`.
-   Il callback fa solo `PostMessage`: nessuna chiamata COM rientrante.
-3. **Transazione nel WndProc**: `GetCollectionCount` → snapshot → `AddChild` →
-   verifica → `RemoveChild` del nativo → verifica, tutto sul thread owner.
-   L'handle della collection viene ottenuto via `Panel.Children()` +
-   `RegisterInstance`, non da `ParentChildRelation::Parent`.
-4. **Layout**: letto dal `FrameworkElement` nativo sul dispatcher XAML e copiato
-   sulla nostra `TextBox` con i setter WinRT (non valori pixel fissi).
-5. **Input**: la `TextBox` ha handler `GotFocus`/`LostFocus`/`KeyDown`. Il low-level
-   hook inoltra solo le scorciatoie al canale, che le accoda al dispatcher XAML.
-6. **Ciclo di vita**: `kAutoRollback = false`. Il ripristino è esplicito su
-   `Wh_ModUninit`, errore di inizializzazione o chiusura della finestra:
-   `GetIInspectableFromHandle` prima della rimozione, `RegisterInstance` su
-   quell'oggetto per ottenere un handle fresco, `AddChild` all'indice originale.
+1. **Passive observer** (`kObserverOnly = true`): `OnVisualTreeChange` detects
+   `FileExplorerSearchBox` without touching the visual tree. The old
+   `CreateSession`/`DesktopWindowXamlSource` path stays disabled.
+2. **Async channel**: a message-only window (`HWND_MESSAGE`) is created in the
+   watcher's constructor, on the owner thread of `IVisualTreeService3`. The
+   callback only does `PostMessage`: no reentrant COM calls.
+3. **Transaction in the WndProc**: `GetCollectionCount` → snapshot → `AddChild` →
+   verify → `RemoveChild` of the native control → verify, all on the owner
+   thread. The collection handle is obtained via `Panel.Children()` +
+   `RegisterInstance`, not from `ParentChildRelation::Parent`.
+4. **Layout**: read from the native `FrameworkElement` on the XAML dispatcher
+   and copied onto our `TextBox` with WinRT setters (not fixed pixel values).
+5. **Input**: the `TextBox` has `GotFocus`/`LostFocus`/`KeyDown` handlers. The
+   low-level hook forwards only shortcuts to the channel, which queues them on
+   the XAML dispatcher.
+6. **Lifetime**: `kAutoRollback = false`. Restoration is explicit on
+   `Wh_ModUninit`, initialization error or window close:
+   `GetIInspectableFromHandle` before removal, `RegisterInstance` on that object
+   to get a fresh handle, `AddChild` at the original index.
 
-## Stato attuale dei flag
+## Current flag state
 
-- `kObserverOnly = true` — non attivare il vecchio overlay.
-- `kReplaceNative = true` — rimozione del controllo nativo dopo l'inserimento.
-- `kAutoRollback = false` — sostituzione persistente.
-- `kCallbackProbeOnly = true` — probe in sola lettura.
+- `kObserverOnly = true` — do not enable the old overlay.
+- `kReplaceNative = true` — remove the native control after insertion.
+- `kAutoRollback = false` — persistent replacement.
+- `kCallbackProbeOnly = true` — read-only probe.
 
-## Latenza di sostituzione
+## Replacement latency
 
-La correlazione e lo swap non devono stare dietro al timer di log da 2 s: il
-coordinator li esegue a ogni tick (~16 ms). Inoltre la correlazione usa il
-thread del callback XAML: se esiste **una sola** finestra `CabinetWClass`
-visibile con lo stesso `PID + thread`, il frame è inequivocabile e si può
-sostituire senza attendere l'UIA `FindFirst(Descendants)` (che può bloccare il
-coordinator per centinaia di ms). In caso di ambiguità si resta sul percorso UIA
-e la barra nativa non viene toccata. Le finestre già mappate via XAML non
-vengono più scansionate con UIA.
+Correlation and swap must not sit behind the 2 s log timer: the coordinator
+runs them on every tick (~16 ms). Correlation also uses the XAML callback
+thread: if there is **exactly one** visible `CabinetWClass` window with the same
+`PID + thread`, the frame is unambiguous and replacement can proceed without
+waiting for UIA `FindFirst(Descendants)` (which can block the coordinator for
+hundreds of ms). If ambiguous, it stays on the UIA path and the native bar is
+not touched. Windows already mapped via XAML are no longer scanned with UIA.
 
-Misurazioni (apertura di una nuova finestra, `C:\Users\<utente>\Downloads`):
+Measurements (opening a new window, `C:\Users\<user>\Downloads`):
 
-| Fase | Prima | Dopo |
+| Phase | Before | After |
 | --- | --- | --- |
-| elemento XAML nativo visibile (`OBSERVE add`) | +0,88 s | +0,85 s |
-| correlazione + inizio C3 | +2,70 s | +0,86 s |
-| `C3 RESULT PASS` | +2,70 s | +1,04 s |
+| native XAML element visible (`OBSERVE add`) | +0.88 s | +0.85 s |
+| correlation + start of C3 | +2.70 s | +0.86 s |
+| `C3 RESULT PASS` | +2.70 s | +1.04 s |
 
-I ~0,85 s iniziali sono la costruzione della UI da parte di Explorer: non sono
-eliminabili senza un overlay, che è escluso per progetto.
+The initial ~0.85 s is Explorer building its UI: it cannot be eliminated
+without an overlay, which is excluded by design.
 
 ## Uninitialize
 
-`Wh_ModUninit` ferma e joina esplicitamente i thread creati dalla mod
-(`executor`, `advise`) invece di contare sui distruttori: Windhawk attende fino
-a 80 s che nessuno stack contenga indirizzi della DLL. Con i join espliciti la
-coda "Uninitializing..." si svuota in pochi secondi. Inoltre
-`CoGetInterfaceAndReleaseStream` rilascia già lo stream: il successivo
-`m_serviceStream = nullptr` era un doppio `Release` e causava un accesso
-violation in esecuzione sul thread `executor`; ora si usa `detach()`.
+`Wh_ModUninit` explicitly stops and joins the threads created by the mod
+(`executor`, `advise`) instead of relying on destructors: Windhawk waits up to
+80 s for no stack to contain addresses of the DLL. With explicit joins the
+"Uninitializing..." queue drains in a few seconds. Also,
+`CoGetInterfaceAndReleaseStream` already releases the stream: the subsequent
+`m_serviceStream = nullptr` was a double `Release` and caused an access violation
+on the `executor` thread; it now uses `detach()`.
 
-## Limiti noti
+## Known limitations
 
-- `SeparateProcess = 1` resta necessario: solo i processi `/factory` espongono
-  XAML Diagnostics; la finestra shell non viene mai agganciata.
-- Le cartelle virtuali (per esempio "Questo PC") non hanno un percorso
-  filesystem: la scope resta vuota e la ricerca è globale, come nella vecchia
-  versione con overlay. Le cartelle reali restano scoped.
+- `SeparateProcess = 1` is still required: only `/factory` processes expose
+  XAML Diagnostics; the shell window is never hooked.
+- Virtual folders (e.g. "This PC") have no filesystem path: the scope stays
+  empty and the search is global, as in the old overlay version. Real folders
+  remain scoped.
 
-## Nota di build
+## Build note
 
-Il build MSVC deve esportare `InternalWhModPtr`: Windhawk lo cerca nel DLL per
-iniettare il contesto usato da `Wh_GetIntSetting`. Senza quell'export il mod
-crasha in `windhawk.dll+0xFD7F` appena legge le impostazioni. Il vecchio build
-clang lo esportava automaticamente (`--export-all-symbols`).
+The MSVC build must export `InternalWhModPtr`: Windhawk looks for it in the DLL
+to inject the context used by `Wh_GetIntSetting`. Without that export the mod
+crashes in `windhawk.dll+0xFD7F` as soon as it reads a setting. The old clang
+build exported it automatically (`--export-all-symbols`).
+
+[Italiano](../README.it.md)

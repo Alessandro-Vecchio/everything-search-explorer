@@ -1,5 +1,9 @@
 # Indagine sul crash di Explorer
 
+> **Historical notes in Italian.** This is a debug investigation record, kept
+> as-is. For the current architecture see `README.md` and
+> `docs/DIRECT-XAML-REPLACEMENT.md`.
+
 Nota: i riferimenti a `xaml-spike/spike.cpp` sono storici. Il codice ora è
 `mod/everything-explorer-search.wh.cpp`.
 
