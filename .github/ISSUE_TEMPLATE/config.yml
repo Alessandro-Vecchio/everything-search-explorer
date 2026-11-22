@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Troubleshooting
+    url: https://github.com/Alessandro-Vecchio/everything-search-explorer#troubleshooting
+    about: Check the quick fixes before opening an issue.
+  - name: Known limitations
+    url: https://github.com/Alessandro-Vecchio/everything-search-explorer/blob/main/docs/KNOWN-ISSUES.md
+    about: The behaviour may already be documented.

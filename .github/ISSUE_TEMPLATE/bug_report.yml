@@ -1,0 +1,86 @@
+name: Bug report
+description: Report a reproducible problem
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing this work-in-progress project.
+
+        Please redact private paths, file names and query text before posting.
+        Check [known limitations](https://github.com/Alessandro-Vecchio/everything-search-explorer/blob/main/docs/KNOWN-ISSUES.md) first.
+
+  - type: input
+    id: windows-version
+    attributes:
+      label: Windows version
+      description: Include the build number if possible.
+      placeholder: Windows 11 23H2, build 22631.XXXX
+    validations:
+      required: true
+
+  - type: input
+    id: everything-version
+    attributes:
+      label: Everything version
+      placeholder: "1.5.0.1423"
+    validations:
+      required: true
+
+  - type: input
+    id: versions
+    attributes:
+      label: Mod and NSE versions
+      placeholder: "mod x.y.z, NSE x.y.z"
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open a real folder
+        2. Press Ctrl+F and search for ...
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnose
+    attributes:
+      label: diagnose output
+      description: Output of `.\tools\diagnose.ps1` (redact private paths).
+      render: shell
+
+  - type: textarea
+    id: request
+    attributes:
+      label: Request file
+      description: Content of the relevant `request-<HWND>.txt`.
+      render: text
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      options:
+        - label: I redacted private paths and file names
+          required: true
+        - label: `SeparateProcess=1` is set and Explorer was restarted
+          required: false
+        - label: Everything is running non-elevated
+          required: false

@@ -1,0 +1,34 @@
+name: Feature request
+description: Suggest an improvement
+title: "[Feature]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This project is a work in progress. Please keep requests small and concrete.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      options:
+        - label: I searched existing issues and known limitations
+          required: true
