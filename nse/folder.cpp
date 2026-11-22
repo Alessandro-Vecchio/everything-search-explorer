@@ -1232,6 +1232,8 @@ ULONG STDMETHODCALLTYPE CEnumIDList::Release() {
 HRESULT STDMETHODCALLTYPE CEnumIDList::Next(ULONG celt, PITEMID_CHILD* rgelt,
                                             ULONG* pceltFetched) {
     if (!rgelt) return E_POINTER;
+    // A null count is only valid when one item is requested.
+    if (celt > 1 && !pceltFetched) return E_POINTER;
     if (pceltFetched) *pceltFetched = 0;
     SyncGeneration();
 
