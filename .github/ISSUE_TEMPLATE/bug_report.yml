@@ -65,7 +65,6 @@ body:
     attributes:
       label: diagnose output
       description: Output of `.\tools\diagnose.ps1` (redact private paths).
-      render: shell
 
   - type: textarea
     id: request
