@@ -46,5 +46,5 @@ cl /nologo /std:c++20 /EHsc /LD /utf-8 /O2 /DUNICODE /D_UNICODE /DWH_MOD ^
    /EXPORT:InternalWhModPtr,DATA ^
    /EXPORT:DllGetClassObject /EXPORT:DllCanUnloadNow ^
    "%WHLIB%" ^
-   ole32.lib runtimeobject.lib oleaut32.lib CoreMessaging.lib UIAutomationCore.lib shell32.lib shlwapi.lib comctl32.lib version.lib user32.lib
+   ole32.lib runtimeobject.lib oleaut32.lib CoreMessaging.lib UIAutomationCore.lib shell32.lib shlwapi.lib comctl32.lib version.lib user32.lib advapi32.lib
 exit /b %errorlevel%

@@ -35,7 +35,8 @@ $dll = Join-Path $installDir 'EverythingSearchNse.dll'
 
 $base = "HKCU:\Software\Classes\CLSID\$guid"
 New-Item -Force -Path $base | Out-Null
-Set-ItemProperty -Path $base -Name '(default)' -Value 'Everything Search'
+Set-ItemProperty -Path $base -Name '(default)' -Value 'Search results'
+Set-ItemProperty -Path $base -Name 'LocalizedString' -Value '@shell32.dll,-34133'
 
 New-Item -Force -Path "$base\InprocServer32" | Out-Null
 Set-ItemProperty -Path "$base\InprocServer32" -Name '(default)' -Value $dll
@@ -52,7 +53,8 @@ Set-ItemProperty -Path $state -Name 'Path' -Value $dll
 if ($DesktopIcon) {
     $namespace = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Desktop\NameSpace\$guid"
     New-Item -Force -Path $namespace | Out-Null
-    Set-ItemProperty -Path $namespace -Name '(default)' -Value 'Everything Search'
+    Set-ItemProperty -Path $namespace -Name '(default)' -Value 'Search results'
+    Set-ItemProperty -Path $namespace -Name 'LocalizedString' -Value '@shell32.dll,-34133'
 }
 
 Write-Host "Namespace extension registered: $dll" -ForegroundColor Green
