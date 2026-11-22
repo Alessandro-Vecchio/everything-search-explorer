@@ -36,6 +36,7 @@ Compact guidance for work in this repository. The README is the user-facing sour
 - Public docs are English-first ([README.md](README.md)); keep [README.it.md](README.it.md) aligned. [docs/DESIGN.md](docs/DESIGN.md) is partly historical - prefer README and code. [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md) is the structured bug ledger; update it when opening/fixing issues.
 - `build/`, `dist/`, `build_check/` and `mod/generated/` are ignored build output: never commit them. The mod's intermediate `.obj/.lib/.exp` go to `build/windhawk/` (not the repo root).
 - User preference: edit → re-read → verify; build and install only when needed or explicitly requested.
+- User preference: code says what it does; comments say why or clarify non-obvious behaviour. Never translate the line. Keep comments short; remove useless, redundant or stale ones. Applies to every code file.
 - Never commit or push without explicit user permission for that specific action.
 
 ## Current high-priority bug
