@@ -1,4 +1,4 @@
-# Direct XAML Replacement (official mod 0.5)
+# Direct XAML Replacement
 
 ## Status
 

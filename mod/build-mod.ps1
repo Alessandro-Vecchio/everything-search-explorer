@@ -1,5 +1,5 @@
 <#
-    Builds the official XAML-based Everything Search mod with MSVC x64 and
+    Builds the XAML-based Everything Search mod with MSVC x64 and
     names the DLL the way install-mod.ps1 expects:
       dist\windhawk\local@everything-search-explorer_<version>_<build>.dll
 
