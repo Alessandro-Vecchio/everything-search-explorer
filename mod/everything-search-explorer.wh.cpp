@@ -93,9 +93,8 @@ native bar is never touched when the window cannot be identified safely.
 
 namespace {
 
-// Observer mode: collect structural relations from OnVisualTreeChange;
-// never query or modify the tree.
-constexpr bool kObserverOnly = true;
+// When true, only observe XAML and leave CreateSession disabled.
+constexpr bool kObserverOnly = false;
 constexpr bool kCallbackProbeOnly = true;
 constexpr bool kReplaceNative = true;
 constexpr bool kAutoRollback = false;
@@ -4260,9 +4259,19 @@ std::unordered_map<HWND, ULONGLONG> g_lastFailure;
 // Stop-Process -Force in the test harness. Attach as soon as a frame exists.
 constexpr ULONGLONG kStartupSettleMs = 0;
 ULONGLONG g_processStartMs = 0;
-DWORD g_coordinatorThreadId = 0;
+DWORD g_processId = 0;
+DWORD g_hookThreadId = 0;
 HANDLE g_thread = nullptr;
-HHOOK g_keyboardHook = nullptr;
+HANDLE g_hookThread = nullptr;
+HHOOK g_keyboardHook = nullptr;  // owned by KeyboardHookThread only
+// CoWaitForMultipleHandles consumes thread messages before the coordinator can
+// drain them, so hook actions go to a message-only window owned by that thread.
+std::atomic<HWND> g_hookTargetWindow{nullptr};
+// Lock-free snapshot published by the coordinator for the input hook.
+std::atomic<HWND> g_hookActiveFrame{nullptr};
+std::atomic<bool> g_hookSearchFocused{false};
+constexpr UINT kHookBackspaceMessage = WM_APP + 0x61;
+constexpr UINT kHookShortcutMessage = WM_APP + 0x62;
 
 // UI Automation costs ~700 ms the first time it is created in a process. Do
 // that at startup, before any folder window exists, so the per-frame lookup
@@ -4337,96 +4346,121 @@ static void DeleteBeforeCaret(winrt::Microsoft::UI::Xaml::Controls::TextBox cons
     box.SelectionLength(0);
 }
 
+// Runs on the dedicated hook thread: cheap Win32 calls and one async post.
 LRESULT CALLBACK KeyboardHookProc(int code, WPARAM wParam, LPARAM lParam) {
-    if (code == HC_ACTION && (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN)) {
-        auto* key = reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam);
-        HWND frame = GetAncestor(GetForegroundWindow(), GA_ROOT);
-
-        // Backspace is a shell accelerator in CabinetWClass ("go back"). It is
-        // consumed before the XAML TextBox sees it, so args.Handled() cannot
-        // stop it. Suppress it here and perform the edit on the XAML dispatcher.
-        if (wParam == WM_KEYDOWN && key->vkCode == VK_BACK) {
-            auto activeState = FindActiveStateForFrame(frame);
-            Log("DIRECT hook BACK frame=%p active=%d focus=%d fg=%p",
-                frame, activeState ? 1 : 0,
-                activeState && activeState->textHasFocus.load() ? 1 : 0,
-                GetForegroundWindow());
-            if (activeState && activeState->textHasFocus.load()) {
-                const bool queued = PostToStateDispatcher(
-                    activeState, [activeState]() {
-                        if (activeState->textBox) {
-                            DeleteBeforeCaret(activeState->textBox);
-                        }
-                    });
-                if (queued) {
-                    Log("DIRECT backspace frame=%p gen=%llu",
-                        activeState->frame,
-                        static_cast<unsigned long long>(
-                            activeState->generation));
-                    return 1;
-                }
-            }
-            auto it = g_sessions.find(frame);
-            if (it != g_sessions.end() && !it->second->closing &&
-                it->second->typedFocus.load() && it->second->watcher &&
-                it->second->searchHandle) {
-                auto session = it->second;
-                session->watcher->RunOnDispatcher(session->searchHandle, [session]() {
-                    DeleteBeforeCaret(session->box);
-                    return S_OK;
-                });
-                Log("Backspace consumed by search field frame=%p", frame);
-                return 1;
-            }
-        }
-
-        const bool control = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
-        const bool alt = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
-        const bool searchShortcut =
-            (control && (key->vkCode == 'F' || key->vkCode == 'E')) ||
-            (!control && key->vkCode == VK_F3);
-        if (searchShortcut) {
-            auto activeState = FindActiveStateForFrame(frame);
-            Log("DIRECT hook shortcut key=%lu frame=%p fg=%p active=%d "
-                "ctrl=%d alt=%d",
-                key->vkCode, frame, GetForegroundWindow(),
-                activeState ? 1 : 0, control ? 1 : 0, alt ? 1 : 0);
-            if (activeState && !alt) {
-                const bool queued = PostToStateDispatcher(
-                    activeState, [activeState]() {
-                        if (!activeState->textBox) return;
-                        const bool ok = activeState->textBox.Focus(
-                            winrt::Microsoft::UI::Xaml::FocusState::Programmatic);
-                        Log("DIRECT focus frame=%p gen=%llu ok=%d",
-                            activeState->frame,
-                            static_cast<unsigned long long>(
-                                activeState->generation),
-                            ok ? 1 : 0);
-                    });
-                if (queued) {
-                    Log("DIRECT shortcut=%lu frame=%p gen=%llu", key->vkCode,
-                        activeState->frame,
-                        static_cast<unsigned long long>(
-                            activeState->generation));
-                    return 1;
-                }
-            }
-            auto it = g_sessions.find(frame);
-            if (it != g_sessions.end() && !it->second->closing &&
-                it->second->watcher && it->second->searchHandle) {
-                auto session = it->second;
-                session->watcher->RunOnDispatcher(session->searchHandle, [session]() {
-                    const bool ok = session->box.Focus(
-                        winrt::Microsoft::UI::Xaml::FocusState::Programmatic);
-                    Log("shortcut focus ok=%d focusHwnd=%p", ok ? 1 : 0, GetFocus());
-                    return S_OK;
-                });
-                Log("search shortcut intercepted for frame=%p", frame);
-                return 1;
-            }
-        }
+    if (code != HC_ACTION || (wParam != WM_KEYDOWN && wParam != WM_SYSKEYDOWN)) {
+        return CallNextHookEx(g_keyboardHook, code, wParam, lParam);
     }
-    return CallNextHookEx(g_keyboardHook, code, wParam, lParam);
+    auto* key = reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam);
+    const UINT vk = key->vkCode;
+    // Every keystroke on the system passes here: filter by key code before
+    // querying modifier state.
+    if (vk != VK_BACK && vk != 'F' && vk != 'E' && vk != VK_F3) {
+        return CallNextHookEx(g_keyboardHook, code, wParam, lParam);
+    }
+    const bool backspace = wParam == WM_KEYDOWN && vk == VK_BACK;
+    const bool control = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+    const bool alt = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+    const bool shortcut = (control && (vk == 'F' || vk == 'E')) ||
+                          (!control && vk == VK_F3);
+    if ((!backspace && !shortcut) || (shortcut && alt)) {
+        return CallNextHookEx(g_keyboardHook, code, wParam, lParam);
+    }
+
+    const HWND frame = GetAncestor(GetForegroundWindow(), GA_ROOT);
+    if (!frame || frame != g_hookActiveFrame.load(std::memory_order_acquire) ||
+        (backspace && !g_hookSearchFocused.load(std::memory_order_acquire))) {
+        return CallNextHookEx(g_keyboardHook, code, wParam, lParam);
+    }
+
+    const HWND target = g_hookTargetWindow.load(std::memory_order_acquire);
+    if (!target) return CallNextHookEx(g_keyboardHook, code, wParam, lParam);
+    const UINT message = backspace ? kHookBackspaceMessage : kHookShortcutMessage;
+    if (!PostMessageW(target, message, reinterpret_cast<WPARAM>(frame), vk)) {
+        return CallNextHookEx(g_keyboardHook, code, wParam, lParam);
+    }
+    return 1;
+}
+
+static DWORD WINAPI KeyboardHookThread(LPVOID) {
+    MSG message{};
+    PeekMessageW(&message, nullptr, WM_USER, WM_USER, PM_NOREMOVE);
+    g_hookThreadId = GetCurrentThreadId();
+    g_keyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, KeyboardHookProc, nullptr, 0);
+    Log("keyboard hook installed tid=%lu hook=%p", g_hookThreadId, g_keyboardHook);
+
+    while (GetMessageW(&message, nullptr, 0, 0) > 0) {
+        DispatchMessageW(&message);
+    }
+    if (g_keyboardHook) {
+        UnhookWindowsHookEx(g_keyboardHook);
+        g_keyboardHook = nullptr;
+    }
+    Log("keyboard hook thread exit");
+    return 0;
+}
+
+// Runs on the coordinator thread, from the message-only window's WndProc or
+// from its own PeekMessage loop. It owns the state/session maps.
+static void HandleHookAction(HWND frame, bool backspace) {
+    auto active = FindActiveStateForFrame(frame);
+    if (active) {
+        PostToStateDispatcher(active, [active, backspace]() {
+            if (!active->textBox) return;
+            if (backspace) DeleteBeforeCaret(active->textBox);
+            else active->textBox.Focus(
+                winrt::Microsoft::UI::Xaml::FocusState::Programmatic);
+        });
+        return;
+    }
+    auto it = g_sessions.find(frame);
+    if (it == g_sessions.end() || it->second->closing ||
+        (backspace && !it->second->typedFocus.load()) ||
+        !it->second->watcher || !it->second->searchHandle) {
+        return;
+    }
+    auto session = it->second;
+    session->watcher->RunOnDispatcher(
+        session->searchHandle, [session, backspace]() {
+            if (backspace) DeleteBeforeCaret(session->box);
+            else session->box.Focus(
+                winrt::Microsoft::UI::Xaml::FocusState::Programmatic);
+            return S_OK;
+        });
+}
+
+static LRESULT CALLBACK HookTargetWndProc(HWND hwnd, UINT message,
+                                          WPARAM wParam, LPARAM lParam) {
+    if (message == kHookBackspaceMessage || message == kHookShortcutMessage) {
+        HandleHookAction(reinterpret_cast<HWND>(wParam),
+                         message == kHookBackspaceMessage);
+        return 0;
+    }
+    return DefWindowProcW(hwnd, message, wParam, lParam);
+}
+
+static HWND CreateHookTargetWindow() {
+    static wchar_t className[96]{};
+    if (!className[0]) {
+        HMODULE module = nullptr;
+        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                               GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCWSTR>(&HookTargetWndProc), &module);
+        swprintf_s(className, ARRAYSIZE(className), L"EsxHookTarget_%p", module);
+    }
+    static ATOM atom = 0;
+    if (!atom) {
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = HookTargetWndProc;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.lpszClassName = className;
+        atom = RegisterClassExW(&wc);
+        if (!atom) Log("hook target RegisterClass failed err=%lu", GetLastError());
+    }
+    if (!atom) return nullptr;
+    return CreateWindowExW(0, className, L"", 0, 0, 0, 0, 0,
+                           HWND_MESSAGE, nullptr, nullptr, nullptr);
 }
 
 RECT FieldRect(HWND frame) {
@@ -5026,6 +5060,20 @@ void ScanFrames() {
             }
             continue;
         }
+        // The diagnostics-based replacement already owns this frame's search
+        // box. Creating a legacy XAML island on top of it fails (E_UNEXPECTED)
+        // and steals focus from the replacement TextBox.
+        {
+            std::lock_guard<std::mutex> guard(g_windowStatesMutex);
+            bool replaced = false;
+            for (const auto& item : g_windowStates) {
+                if (item.second->frame == frame && item.second->replacementActive) {
+                    replaced = true;
+                    break;
+                }
+            }
+            if (replaced) continue;
+        }
         if (g_sessions.count(frame)) continue;
         const ULONGLONG lastFailure = g_lastFailure[frame];
         if (lastFailure && GetTickCount64() - lastFailure < 250) continue;
@@ -5057,7 +5105,7 @@ DWORD WINAPI CoordinatorThread(LPVOID) {
     Log("coordinator thread start");
     MSG queueMessage{};
     PeekMessageW(&queueMessage, nullptr, WM_USER, WM_USER, PM_NOREMOVE);
-    g_coordinatorThreadId = GetCurrentThreadId();
+    g_hookTargetWindow.store(CreateHookTargetWindow(), std::memory_order_release);
 
     struct DiagnosticsCleanup {
         ~DiagnosticsCleanup() { StopAllXamlDiagnostics(); }
@@ -5067,10 +5115,6 @@ DWORD WINAPI CoordinatorThread(LPVOID) {
         winrt::init_apartment(winrt::apartment_type::single_threaded);
         Log("apartment ok");
         EnsureAutomation();
-        // Install the keyboard hook first: EnsureDiagnosticsObserver() can retry
-        // for up to a minute, and Ctrl+F must work immediately at startup.
-        g_keyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, KeyboardHookProc, nullptr, 0);
-        Log("keyboard hook=%p", g_keyboardHook);
         EnsureDiagnosticsObserver();
 
         ULONGLONG lastInventory = 0;
@@ -5087,6 +5131,8 @@ DWORD WINAPI CoordinatorThread(LPVOID) {
                     Log("coordinator WM_QUIT");
                     goto shutdown;
                 }
+                // Hook actions are window messages: COM's wait dispatches them
+                // to HookTargetWndProc, or the DispatchMessage below does.
                 if (message.hwnd == nullptr && message.message == kSubmitQueryMessage) {
                     auto* query = reinterpret_cast<std::wstring*>(message.lParam);
                     if (query) {
@@ -5108,10 +5154,40 @@ DWORD WINAPI CoordinatorThread(LPVOID) {
                 break;
             }
 
-            // Correlate and swap BEFORE the UIA sweep: FindFirst(Descendants)
-            // in ScanFrames can block this thread for hundreds of ms, which
-            // would otherwise delay the replacement. The 2 s timer below is
-            // only for verbose logging.
+            // Publish before the UIA sweep: FindFirst(Descendants) in
+            // ScanFrames can hold this thread for hundreds of ms, which would
+            // otherwise leave the hook deciding on a stale snapshot.
+            const HWND foreground = GetAncestor(GetForegroundWindow(), GA_ROOT);
+            // Gate on window identity, not on state lookup: a state may not be
+            // mapped yet (or may be mid-replacement) while the user still needs
+            // Ctrl+F and Backspace to work in this Explorer window. HandleHookAction
+            // decides whether a target actually exists.
+            bool ourFrame = false;
+            if (foreground) {
+                DWORD pid = 0;
+                wchar_t cls[64]{};
+                GetWindowThreadProcessId(foreground, &pid);
+                ourFrame = pid == g_processId &&
+                           GetClassNameW(foreground, cls, ARRAYSIZE(cls)) &&
+                           wcscmp(cls, L"CabinetWClass") == 0;
+            }
+            g_hookActiveFrame.store(ourFrame ? foreground : nullptr,
+                                    std::memory_order_release);
+            auto hookState = FindActiveStateForFrame(foreground);
+            bool sessionFocus = false;
+            if (!hookState) {
+                auto it = g_sessions.find(foreground);
+                if (it != g_sessions.end() && !it->second->closing &&
+                    it->second->watcher && it->second->searchHandle) {
+                    sessionFocus = it->second->typedFocus.load();
+                }
+            }
+            g_hookSearchFocused.store(
+                hookState ? hookState->textHasFocus.load() : sessionFocus,
+                std::memory_order_release);
+
+            // Correlate and swap BEFORE the UIA sweep so a ready replacement is
+            // installed without waiting for the sweep to finish.
             CorrelateWindowStates();
             ReplaceSearchBoxForReadyStates();
 
@@ -5174,7 +5250,8 @@ DWORD WINAPI CoordinatorThread(LPVOID) {
             }
             for (const auto& state : buttonStates) {
                 const ULONGLONG last = state->lastButtonCheck.load();
-                if (now - last < 750) continue;
+                // Short enough to hide the button promptly on navigation.
+                if (now - last < 250) continue;
                 state->lastButtonCheck.store(now);
                 const bool visible = IsResultsFolder(state->frame);
                 if (visible == state->buttonsVisible.load()) continue;
@@ -5201,9 +5278,8 @@ DWORD WINAPI CoordinatorThread(LPVOID) {
             }
         }
     shutdown:
-        if (g_keyboardHook) {
-            UnhookWindowsHookEx(g_keyboardHook);
-            g_keyboardHook = nullptr;
+        if (HWND target = g_hookTargetWindow.exchange(nullptr)) {
+            DestroyWindow(target);
         }
         UnregisterLoadedXamlFactories();
         for (auto& entry : g_sessions) CloseSession(entry.second);
@@ -5258,6 +5334,7 @@ extern "C" BOOL Wh_ModInit() {
         GetCommandLineW());
 
     g_processStartMs = ::GetTickCount64();
+    g_processId = GetCurrentProcessId();
     g_stopping = false;
     g_tapAttachedEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     g_stopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
@@ -5266,7 +5343,9 @@ extern "C" BOOL Wh_ModInit() {
         return FALSE;
     }
     g_thread = CreateThread(nullptr, 0, CoordinatorThread, nullptr, 0, nullptr);
-    return g_thread != nullptr;
+    if (!g_thread) return FALSE;
+    g_hookThread = CreateThread(nullptr, 0, KeyboardHookThread, nullptr, 0, nullptr);
+    return g_hookThread != nullptr;
 }
 
 static void RollbackStateOnDispatcher(const std::shared_ptr<WindowState>& state) {
@@ -5388,6 +5467,14 @@ extern "C" void Wh_ModUninit() {
         std::lock_guard<std::mutex> guard(g_lifecycleMutex);
         g_stopping = true;
         if (g_stopEvent) SetEvent(g_stopEvent);
+    }
+    if (g_hookThreadId) {
+        PostThreadMessageW(g_hookThreadId, WM_QUIT, 0, 0);
+    }
+    if (g_hookThread) {
+        WaitForSingleObject(g_hookThread, 2000);
+        CloseHandle(g_hookThread);
+        g_hookThread = nullptr;
     }
     bool coordinatorStopped = true;
     if (g_thread) {
