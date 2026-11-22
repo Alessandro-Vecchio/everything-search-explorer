@@ -77,6 +77,11 @@ if ($LASTEXITCODE -ne 0) { throw "Build failed with exit code $LASTEXITCODE" }
 New-Item -ItemType Directory -Force -Path $distDir | Out-Null
 $buildId = Get-Random -Minimum 100000 -Maximum 999999
 $destination = Join-Path $distDir "local@everything-search-explorer_${version}_${buildId}.dll"
+# Keep only the newest mod DLL in dist; older builds are install-time clutter.
+Get-ChildItem -LiteralPath $distDir -Filter 'local@everything-search-explorer_*.dll' -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -ne (Split-Path $destination -Leaf) } |
+    Remove-Item -Force -ErrorAction SilentlyContinue
+
 Copy-Item $rawDll $destination -Force
 Remove-Item $rawDll -Force -ErrorAction SilentlyContinue
 

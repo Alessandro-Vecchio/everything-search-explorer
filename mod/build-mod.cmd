@@ -31,12 +31,16 @@ if not exist "%WHLIB%" (
 )
 
 set "OUT=%~dp0..\dist\windhawk"
+set "BUILDOBJ=%~dp0..\build\windhawk"
 if not exist "%OUT%" mkdir "%OUT%"
+if not exist "%BUILDOBJ%" mkdir "%BUILDOBJ%"
 cl /nologo /std:c++20 /EHsc /LD /utf-8 /O2 /DUNICODE /D_UNICODE /DWH_MOD ^
    /DWH_MOD_ID=L\"local@everything-search-explorer\" /DWH_MOD_VERSION=L\"0.5.0\" ^
    /I"%~dp0generated" ^
+   /Fo"%BUILDOBJ%\\" /Fd"%BUILDOBJ%\\" ^
    "%~dp0everything-search-explorer.wh.cpp" ^
    /link /OUT:"%OUT%\everything-search-explorer.dll" ^
+   /IMPLIB:"%BUILDOBJ%\everything-search-explorer.wh.lib" ^
    /EXPORT:_Z10Wh_ModInitv=Wh_ModInit /EXPORT:_Z12Wh_ModUninitv=Wh_ModUninit ^
    /EXPORT:_Z21Wh_ModSettingsChangedv=Wh_ModSettingsChanged ^
    /EXPORT:InternalWhModPtr,DATA ^

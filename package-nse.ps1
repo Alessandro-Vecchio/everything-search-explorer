@@ -27,6 +27,11 @@ if (-not (Test-Path -LiteralPath $source)) {
 }
 
 $dist = Join-Path $root 'dist'
+# Keep only the current versioned DLL; older ones are build clutter.
+Get-ChildItem -LiteralPath $dist -Filter 'EverythingSearchNse-v*.dll' -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -ne "EverythingSearchNse-v$version.dll" } |
+    Remove-Item -Force
+
 $target = Join-Path $dist "EverythingSearchNse-v$version.dll"
 Copy-Item -LiteralPath $source -Destination $target -Force
 
