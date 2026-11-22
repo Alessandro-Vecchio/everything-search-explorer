@@ -37,6 +37,7 @@ Compact guidance for work in this repository. The README is the user-facing sour
 - `build/`, `dist/`, `build_check/` and `mod/generated/` are ignored build output: never commit them. The mod's intermediate `.obj/.lib/.exp` go to `build/windhawk/` (not the repo root).
 - User preference: edit → re-read → verify; build and install only when needed or explicitly requested.
 - User preference: code says what it does; comments say why or clarify non-obvious behaviour. Never translate the line. Keep comments short; remove useless, redundant or stale ones. Applies to every code file.
+- User preference: UI interaction tests belong to the user. Do not drive Explorer or other apps with UIAutomation/SendKeys to verify behaviour; use logs and code inspection instead, then report what the user should check.
 - Never commit or push without explicit user permission for that specific action.
 
 ## Current high-priority bug
