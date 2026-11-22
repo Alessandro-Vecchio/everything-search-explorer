@@ -14,8 +14,9 @@
 namespace bridge {
 namespace {
 
-// Posted to our own worker window to start a query.
+// Posted to our own worker window to start a query or to abandon one.
 constexpr UINT kQueryMessage = WM_APP + 0x51;
+constexpr UINT kCancelMessage = WM_APP + 0x52;
 constexpr wchar_t kIpcWindowClass[] = L"EverythingSearchIpcWnd";
 
 // Replies carry this value in COPYDATASTRUCT::dwData, so a late reply from an
@@ -34,10 +35,12 @@ enum class Error {
     SendFailed,
     Timeout,
     BadReply,
+    Cancelled,
 };
 
 struct Job {
     DWORD replyId = 0;
+    std::uint64_t owner = 0;
     std::wstring search;
     DWORD offset = 0;
     DWORD maxResults = 0;
@@ -83,33 +86,107 @@ std::string DescribeError(Error error) {
             return "Everything did not answer in time";
         case Error::BadReply:
             return "Everything returned an unexpected reply";
+        case Error::Cancelled:
+            return "search cancelled";
         default:
             return "unknown error";
     }
 }
 
+std::vector<std::wstring> SplitTerms(const std::wstring& value) {
+    std::vector<std::wstring> terms;
+    std::size_t pos = 0;
+    while (pos < value.size()) {
+        while (pos < value.size() && value[pos] == L' ') ++pos;
+        const std::size_t start = pos;
+        while (pos < value.size() && value[pos] != L' ') ++pos;
+        if (pos > start) terms.push_back(value.substr(start, pos - start));
+    }
+    return terms;
+}
+
 // Everything requires matches to stay inside the folder when scoped. The
-// "path:" modifier exists in both 1.4 and 1.5.
+// search functions used here (parent:, attributes:, date-modified:, size:)
+// and < > grouping need Everything 1.5.
 std::wstring BuildSearchStringInternal(const esx::QueryRequest& req) {
-    std::wstring text;
+    // scope is shared by every alternative so a toggle never widens the
+    // search outside the current folder. text adds the plain filename query.
+    std::wstring scope;
     if ((req.flags & esx::ScopeToFolder) && !req.folder.empty()) {
         // "Cartella corrente" means direct children only (parent:); "Tutte le
         // sottocartelle" adds IncludeSubfolders and uses recursive path:.
-        const wchar_t* function =
-            (req.flags & esx::IncludeSubfolders) ? L"path:" : L"parent:";
-        text = function + std::wstring(L"\"") + req.folder + L"\"";
+        const bool recursive = (req.flags & esx::IncludeSubfolders) != 0;
+        std::wstring folder = req.folder;
+        if (recursive) {
+            // A trailing backslash makes path: match descendants, not a
+            // sibling whose name starts with the same text.
+            while (folder.size() > 3 && (folder.back() == L'\\' || folder.back() == L'/')) {
+                folder.pop_back();
+            }
+            if (!folder.empty() && folder.back() != L'\\' && folder.back() != L'/') {
+                folder += L'\\';
+            }
+        }
+        const wchar_t* function = recursive ? L"path:" : L"parent:";
+        scope = function + std::wstring(L"\"") + folder + L"\"";
     }
-    auto append = [&text](const std::wstring& term) {
+    auto append = [](std::wstring& target, const std::wstring& term) {
         if (term.empty()) return;
-        if (!text.empty()) text += L' ';
-        text += term;
+        if (!target.empty()) target += L' ';
+        target += term;
     };
-    append(req.query);
-    append(req.filter);
-    if (req.contentSearch && !req.query.empty()) {
-        append(L"content:" + req.query);
+    append(scope, req.filter);
+    std::wstring text = scope;
+    append(text, req.query);
+
+    // Everything hides system, compressed and content matches by default.
+    // A toggle includes that category; without it the category is excluded.
+    const auto includes = SplitTerms(req.includeFilter);
+    auto isIncluded = [&](const std::wstring& token) {
+        for (const auto& item : includes) {
+            if (_wcsicmp(item.c_str(), token.c_str()) == 0) return true;
+        }
+        return false;
+    };
+    const bool withSystem = isIncluded(L"attributes:s");
+    const bool withZip = isIncluded(L"zip:");
+
+    auto withExclusions = [&](std::wstring value) {
+        if (!withSystem) append(value, L"!attributes:s");
+        if (!withZip) append(value, L"!zip:");
+        return value;
+    };
+
+    std::wstring base = withExclusions(text);
+    if (base.empty() && !(req.contentSearch && !req.query.empty())) return {};
+
+    // Each opted-in category is an alternative that still matches the query.
+    std::vector<std::wstring> alternatives;
+    if (!base.empty()) alternatives.push_back(L"<" + base + L">");
+    for (const auto& token : includes) {
+        if (!token.empty() && !text.empty()) {
+            alternatives.push_back(L"<" + text + L" " + token + L">");
+        }
     }
-    return text;
+    if (req.contentSearch && !req.query.empty()) {
+        // Keep scope and filters: a content search must not escape into a
+        // global search. Drop the plain filename term and group the query so
+        // multi-word searches match the content instead of the name.
+        std::wstring contentQuery = req.query;
+        if (contentQuery.size() < 2 || contentQuery.front() != L'<' ||
+            contentQuery.back() != L'>') {
+            contentQuery = L"<" + contentQuery + L">";
+        }
+        std::wstring contentBase = withExclusions(scope);
+        append(contentBase, L"content:" + contentQuery);
+        alternatives.push_back(L"<" + contentBase + L">");
+    }
+    std::wstring result;
+    for (const auto& alt : alternatives) {
+        if (!result.empty()) result += L" | ";
+        result += alt;
+    }
+    return result;
 }
 
 // ------------------------------------------------------------ reply parsing
@@ -272,6 +349,32 @@ bool SendToEverything(Job& job) {
     return true;
 }
 
+// Everything runs one query per reply window: sending another QUERY2 cancels
+// the one in flight. max_results=0 asks for no results, so this is cheap and
+// its reply (tagged with a fresh id) is ignored because no job is pending.
+void SendCancelToEverything() {
+    HWND everything = ::FindWindowW(esx::ipc::kWindowClass, nullptr);
+    if (!everything || !g_wnd) return;
+
+    constexpr DWORD bytes = sizeof(esx::ipc::Query2) - sizeof(WCHAR) + sizeof(WCHAR);
+    std::vector<BYTE> buffer(bytes, 0);
+    auto* query = reinterpret_cast<esx::ipc::Query2*>(buffer.data());
+    query->reply_hwnd = static_cast<DWORD>(reinterpret_cast<DWORD_PTR>(g_wnd));
+    query->reply_copydata_message =
+        kReplyBase | (static_cast<DWORD>(::InterlockedIncrement(&g_nextJobId)) & 0x000FFFFF);
+    query->sort_type = esx::ipc::kSortNameAscending;
+
+    COPYDATASTRUCT cds{};
+    cds.dwData = esx::ipc::kCopyDataQuery2W;
+    cds.cbData = bytes;
+    cds.lpData = buffer.data();
+
+    DWORD_PTR ignored = 0;
+    ::SendMessageTimeoutW(everything, WM_COPYDATA, reinterpret_cast<WPARAM>(g_wnd),
+                          reinterpret_cast<LPARAM>(&cds), SMTO_ABORTIFHUNG | SMTO_BLOCK,
+                          kSendTimeoutMs, &ignored);
+}
+
 LRESULT CALLBACK IpcWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     if (msg == kQueryMessage) {
         auto* job = reinterpret_cast<Job*>(lParam);
@@ -290,6 +393,23 @@ LRESULT CALLBACK IpcWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
 
         if (!SendToEverything(*job)) FinishJob(job);
+        return 0;
+    }
+
+    if (msg == kCancelMessage) {
+        const std::uint64_t owner = static_cast<std::uint64_t>(lParam);
+        Job* victim = nullptr;
+        ::AcquireSRWLockExclusive(&g_lock);
+        if (g_pending && g_pending->owner == owner) {
+            victim = g_pending;
+            g_pending = nullptr;
+        }
+        ::ReleaseSRWLockExclusive(&g_lock);
+        if (victim) {
+            victim->error = Error::Cancelled;
+            FinishJob(victim);
+            SendCancelToEverything();
+        }
         return 0;
     }
 
@@ -363,7 +483,7 @@ bool EnsureWorker() {
 
 bool RunOnePage(const std::wstring& search, DWORD offset, DWORD flags, DWORD maxResults,
                 std::vector<esx::QueryResultItem>& out, DWORD& rawCount, DWORD& totalCount,
-                std::string& error) {
+                std::string& error, std::uint64_t owner) {
     std::lock_guard<std::mutex> queryLock(g_queryMutex);
     auto* job = new (std::nothrow) Job();
     if (!job) {
@@ -380,6 +500,7 @@ bool RunOnePage(const std::wstring& search, DWORD offset, DWORD flags, DWORD max
 
     job->replyId =
         kReplyBase | (static_cast<DWORD>(::InterlockedIncrement(&g_nextJobId)) & 0x000FFFFF);
+    job->owner = owner;
     job->search = search;
     job->offset = offset;
     job->maxResults = maxResults;
@@ -422,13 +543,14 @@ std::wstring BuildSearchString(const esx::QueryRequest& req) {
 
 bool QueryPage(const std::wstring& search, DWORD offset, DWORD flags, DWORD wanted,
                std::vector<esx::QueryResultItem>& out, DWORD& rawCount,
-               DWORD& totalCount, std::string& error) {
+               DWORD& totalCount, std::string& error, std::uint64_t owner) {
     if (!EnsureReady()) {
         error = DescribeError(Error::NotRunning);
         return false;
     }
     const ULONGLONG started = ::GetTickCount64();
-    const bool ok = RunOnePage(search, offset, flags, wanted, out, rawCount, totalCount, error);
+    const bool ok =
+        RunOnePage(search, offset, flags, wanted, out, rawCount, totalCount, error, owner);
     ESX_TRACE_LOG("TIMING QueryPage offset=%u raw=%u total=%u ms=%llu", offset, rawCount,
                   totalCount, ::GetTickCount64() - started);
     return ok;
@@ -468,7 +590,7 @@ bool Query(const esx::QueryRequest& req, std::vector<esx::QueryResultItem>& out,
         DWORD raw = 0;
         DWORD total = 0;
         const ULONGLONG tPage = ::GetTickCount64();
-        if (!RunOnePage(search, offset, req.flags, wanted, page, raw, total, error)) {
+        if (!RunOnePage(search, offset, req.flags, wanted, page, raw, total, error, 0)) {
             return false;
         }
         ESX_TRACE_LOG("TIMING Query page=%u raw=%u total=%u ms=%llu", batch, raw, total,
@@ -484,8 +606,8 @@ bool Query(const esx::QueryRequest& req, std::vector<esx::QueryResultItem>& out,
 
     if (out.size() > limit) out.resize(limit);
 
-    // `path:"C:\dir" *` also matches C:\dir itself: showing the folder we came
-    // from as a search result is never useful.
+    // Defensive: the scoped search should already exclude the origin folder,
+    // but showing the folder we came from is never useful.
     if (req.flags & esx::ScopeToFolder && !req.folder.empty()) {
         std::wstring scoped = req.folder;
         while (scoped.size() > 3 && (scoped.back() == L'\\' || scoped.back() == L'/')) {
@@ -505,6 +627,14 @@ bool Query(const esx::QueryRequest& req, std::vector<esx::QueryResultItem>& out,
     ESX_TRACE_LOG("TIMING Query total=%llu ms results=%zu limit=%u",
                   ::GetTickCount64() - tStart, out.size(), limit);
     return true;
+}
+
+void CancelQuery(std::uint64_t owner) {
+    if (!owner) return;
+    ::AcquireSRWLockShared(&g_initLock);
+    HWND wnd = g_wnd;
+    ::ReleaseSRWLockShared(&g_initLock);
+    if (wnd) ::PostMessageW(wnd, kCancelMessage, 0, static_cast<LPARAM>(owner));
 }
 
 }  // namespace bridge

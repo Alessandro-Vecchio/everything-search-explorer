@@ -220,6 +220,7 @@ HRESULT CFolder::Create(REFIID riid, void** ppv) {
 }
 
 CFolder::~CFolder() {
+    bridge::CancelQuery(m_cancelToken);
     ClearItems();
     if (m_rootPidl) ::CoTaskMemFree(m_rootPidl);
     ::InterlockedDecrement(&g_cRefDll);
@@ -319,9 +320,9 @@ std::wstring CFolder::DisplayNameLocked(SHGDNF uFlags) const {
 void CFolder::AppendPageLocked(const std::vector<esx::QueryResultItem>& page) {
     m_items.reserve(m_items.size() + page.size());
     for (const auto& r : page) {
-        // `path:"C:\dir" *` matches the directory itself. The old removal lived
-        // only in bridge::Query(), which Explorer never calls: filter here so
-        // the lazy enumerator used by the shell does not show the origin folder.
+        // The old removal lived only in bridge::Query(), which Explorer never
+        // calls: filter here so the lazy enumerator used by the shell does not
+        // show the origin folder.
         if ((m_flags & static_cast<DWORD>(esx::ScopeToFolder)) && !m_folder.empty() &&
             IsSamePathIgnoringTrailingSlash(r.path, m_folder)) {
             continue;
@@ -388,7 +389,8 @@ bool CFolder::LoadMore() {
     DWORD raw = 0;
     DWORD total = 0;
     std::string error;
-    if (!bridge::QueryPage(search, offset, flags, wanted, page, raw, total, error)) {
+    if (!bridge::QueryPage(search, offset, flags, wanted, page, raw, total, error,
+                           m_cancelToken)) {
         std::lock_guard<std::mutex> lock(m_mutex);
         // A replaced query must not fail this one.
         if (generation == m_generation.load(std::memory_order_relaxed)) {
@@ -428,6 +430,7 @@ void CFolder::LoadItemsLocked(HWND frameHint) {
         m_query.clear();
         m_folder.clear();
         m_filter.clear();
+        m_includeFilter.clear();
         m_contentSearch = false;
         return;
     }
@@ -439,6 +442,7 @@ void CFolder::LoadItemsLocked(HWND frameHint) {
     if (m_loaded && request.seq == m_seq && request.query == m_query &&
         request.folder == m_folder && request.maxResults == m_maxResults &&
         request.flags == m_flags && request.filter == m_filter &&
+        request.includeFilter == m_includeFilter &&
         request.contentSearch == m_contentSearch) {
         return;
     }
@@ -451,6 +455,7 @@ void CFolder::LoadItemsLocked(HWND frameHint) {
     m_query = request.query;
     m_folder = request.folder;
     m_filter = request.filter;
+    m_includeFilter = request.includeFilter;
     m_contentSearch = request.contentSearch;
     m_maxResults = request.maxResults;
     m_flags = request.flags;

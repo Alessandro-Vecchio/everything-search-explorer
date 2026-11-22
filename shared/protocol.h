@@ -30,7 +30,7 @@ inline constexpr wchar_t kWindowRequestSuffix[] = L".txt";
 enum QueryFlags : std::uint32_t {
     ScopeToFolder = 1u << 0,
     IncludeFolders = 1u << 1,
-    IncludeSubfolders = 1u << 2,  // path:"..." instead of parent:"..."
+    IncludeSubfolders = 1u << 2,  // path:"...\" instead of parent:"..."
 };
 
 struct QueryRequest {
@@ -40,7 +40,8 @@ struct QueryRequest {
     std::uint32_t flags = ScopeToFolder | IncludeFolders;
     std::wstring folder;
     std::wstring query;
-    std::wstring filter;     // Everything modifiers from "Search options"
+    std::wstring filter;        // Everything terms that narrow the search (AND)
+    std::wstring includeFilter; // Everything terms that widen the search (OR)
     bool contentSearch = false;
 };
 
@@ -114,6 +115,7 @@ inline std::string SerializeRequest(const QueryRequest& r) {
     s += "folder=" + WideToUtf8(r.folder) + "\n";
     s += "query=" + WideToUtf8(r.query) + "\n";
     s += "filter=" + WideToUtf8(r.filter) + "\n";
+    s += "include=" + WideToUtf8(r.includeFilter) + "\n";
     s += "content=" + std::to_string(r.contentSearch ? 1 : 0) + "\n";
     return s;
 }
@@ -150,6 +152,7 @@ inline bool ParseRequest(std::string_view text, QueryRequest& out) {
             else if (key == "folder") r.folder = Utf8ToWide(value);
             else if (key == "query") { r.query = Utf8ToWide(value); sawQuery = true; }
             else if (key == "filter") r.filter = Utf8ToWide(value);
+            else if (key == "include") r.includeFilter = Utf8ToWide(value);
             else if (key == "content") r.contentSearch = std::strtoul(std::string(value).c_str(), nullptr, 10) != 0;
         }
         pos = eol + 1;

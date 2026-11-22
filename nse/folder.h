@@ -227,6 +227,12 @@ private:
     LONG m_ref = 1;
     PIDLIST_ABSOLUTE m_rootPidl = nullptr;
 
+    // Unique per folder instance so a stale cancel from a destroyed folder
+    // cannot abort a new folder allocated at the same address.
+    inline static std::atomic<std::uint64_t> s_nextCancelToken{1};
+    const std::uint64_t m_cancelToken =
+        s_nextCancelToken.fetch_add(1, std::memory_order_relaxed);
+
     mutable std::mutex m_mutex;
     std::mutex m_fetchMutex;       // serializes page IPC without holding m_mutex
     std::atomic<std::uint64_t> m_generation{0};
@@ -245,6 +251,7 @@ private:
     std::wstring m_query;
     std::wstring m_folder;
     std::wstring m_filter;
+    std::wstring m_includeFilter;
     bool m_contentSearch = false;
 
     HWND m_viewHwnd = nullptr;

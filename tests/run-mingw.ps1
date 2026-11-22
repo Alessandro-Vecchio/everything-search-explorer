@@ -96,7 +96,8 @@ $request = @(
 
 if ($Ipc) {
     Write-Host 'Running IPC probe (raw reply dump)...' -ForegroundColor Cyan
-    $search = if ($Global) { $Query } else { "path:`"$Folder`" $Query" }
+    $scope = $Folder.TrimEnd('\', '/')
+    $search = if ($Global) { $Query } else { "path:`"$scope\`" $Query" }
     & "$out\ipc_probe.exe" $search
     return
 }

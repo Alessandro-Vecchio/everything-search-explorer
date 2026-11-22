@@ -37,7 +37,7 @@ function Get-FlagDescription {
     if ($Flags -band 4) { $parts += 'recursive' }
     if ($parts.Count -eq 0) { $parts += 'none' }
     if (($Flags -band 1) -and ($Flags -band 4)) {
-        $scope = 'ALL SUBFOLDERS  (path:...)'
+        $scope = 'ALL SUBFOLDERS  (path:...\)'
     } elseif ($Flags -band 1) {
         $scope = 'CURRENT FOLDER ONLY  (parent:...)'
     } else {

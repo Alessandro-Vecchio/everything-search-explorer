@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -16,14 +17,19 @@ constexpr DWORD kSafetyCeiling = kBatchSize * kMaxBatches;  // 393.216
 // Makes sure the Everything notification window and our IPC worker exist.
 bool EnsureReady();
 
-// Builds the Everything search string for a request (scope -> path:"...").
+// Builds the Everything search string for a request (scope -> path:"...\").
 std::wstring BuildSearchString(const esx::QueryRequest& req);
 
 // Fetches one page. `offset` is the raw index in Everything's result list,
 // `total` reports how many matches Everything found in total.
 bool QueryPage(const std::wstring& search, DWORD offset, DWORD flags, DWORD wanted,
                std::vector<esx::QueryResultItem>& out, DWORD& rawCount,
-               DWORD& totalCount, std::string& error);
+               DWORD& totalCount, std::string& error, std::uint64_t owner = 0);
+
+// Aborts the query issued by `owner` and cancels it in Everything. Safe to
+// call after the owner is gone; the token is matched against the in-flight
+// job on the IPC thread.
+void CancelQuery(std::uint64_t owner);
 
 // Runs one query against Everything, out of band.
 //
