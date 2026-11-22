@@ -3879,37 +3879,28 @@ bool WriteSearchRequest(const std::wstring& query, const std::wstring& folder, H
     // bit 0 = scope to the folder the search started from, bit 1 = folders.
     const bool scoped = g_scopeToFolder && !folder.empty();
     const unsigned flags = 2u | (scoped ? 1u : 0u) | (scoped ? 4u : 0u);
-    std::string data = "seq=" + std::to_string(sequence) + "\n" +
-                       "max=" + std::to_string(g_maxResults) +
-                       "\nflags=" + std::to_string(flags) +
-                       "\nfolder=" + ToUtf8(scoped ? folder : std::wstring()) +
-                       "\nquery=" + ToUtf8(query) + "\n";
 
-    // The global file is kept for compatibility with external tools, but the
-    // extension reads the per-window snapshot: otherwise a search in another
-    // frame overwrites it and a refresh here adopts that query.
-    auto writeOne = [&](const std::wstring& path) -> bool {
-        if (path.empty()) return true;
-        const std::wstring temporary = path + L".tmp";
-        HANDLE file = CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr,
-                                  CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (file == INVALID_HANDLE_VALUE) return false;
-        DWORD written = 0;
-        const bool ok = WriteFile(file, data.data(), static_cast<DWORD>(data.size()),
-                                  &written, nullptr) &&
-                        written == data.size();
-        CloseHandle(file);
-        if (!ok) return false;
-        return MoveFileExW(temporary.c_str(), path.c_str(),
-                           MOVEFILE_REPLACE_EXISTING) != FALSE;
-    };
+    esx::QueryRequest request;
+    request.seq = sequence;
+    request.maxResults = g_maxResults;
+    request.flags = flags;
+    request.folder = scoped ? folder : std::wstring();
+    request.query = query;
 
-    const bool global = writeOne(globalPath);
-    const bool perWindow = writeOne(windowPath);
+    // Use the shared writer so both files get a unique temp name. The old
+    // path + L".tmp" made every window fight over request.txt.tmp with
+    // dwShareMode = 0, so a simultaneous search could fail to be written.
+    const bool global = esx::WriteRequestFileTo(globalPath, request);
+    const bool perWindow = windowPath.empty() || esx::WriteRequestFileTo(windowPath, request);
     Log("writing search request frame=%p flags=%u folder='%ls' query='%ls' "
         "global=%d perWindow=%d",
         frame, flags, folder.c_str(), query.c_str(), global ? 1 : 0, perWindow ? 1 : 0);
-    return global && perWindow;
+
+    // The extension reads the per-window file; the global one only keeps
+    // external tools working. A failed compatibility write must not suppress
+    // navigation when the real handoff succeeded. With no window key the
+    // global file is the only handoff, so it stays mandatory there.
+    return windowPath.empty() ? global : perWindow;
 }
 
 static HWND AncestorWithClass(HWND hwnd, const wchar_t* className) {

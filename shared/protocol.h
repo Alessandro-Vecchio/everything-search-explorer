@@ -215,10 +215,14 @@ inline bool WriteRequestFile(const QueryRequest& r) {
 // file keeps tools/tests working; the extension never uses it for enumeration
 // when a per-window file is available.
 inline bool WriteRequestForWindow(HWND frame, const QueryRequest& r) {
+    // The global file is a compatibility fallback; the per-window snapshot is
+    // what the extension reads. A failed compatibility write must not make a
+    // successful handoff look like a failure. Without a window key the global
+    // file is the only handoff, so it stays mandatory in that case.
     const bool global = WriteRequestFile(r);
     if (!frame) return global;
     const bool perWindow = WriteRequestFileTo(GetRequestFilePath(frame), r);
-    return global && perWindow;
+    return perWindow;
 }
 
 }  // namespace esx
