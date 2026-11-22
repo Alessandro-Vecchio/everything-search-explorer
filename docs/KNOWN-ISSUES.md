@@ -52,9 +52,10 @@ if the folder is still empty, keep *Current folder* disabled and do not write a
 **Symptom.** After a second consecutive search with a large result set, the new
 list becomes visible only after the whole re-enumeration finishes.
 
-**Hypothesis.** In-place `IShellView::Refresh()` plus DefView's own caching; the
-NSE cannot change item identities cheaply enough. A dynamic/token PIDL approach
-for the second render was considered and parked.
+**Hypothesis.** In-place navigation to the same PIDL plus
+`SHChangeNotify(SHCNE_UPDATEDIR)` and DefView's own caching; the NSE cannot change
+item identities cheaply enough. A dynamic/token PIDL approach for the second
+render was considered and parked.
 
 **Next step.** Revisit only if it becomes a blocking complaint; measure against
 `tests/run-mingw.ps1` first.

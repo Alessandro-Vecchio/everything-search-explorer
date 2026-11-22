@@ -4,7 +4,7 @@ Compact guidance for work in this repository. The README is the user-facing sour
 
 ## Environment and setup
 
-- Windows 11 x64 only; all `.ps1` scripts require **PowerShell 7+** (`#requires -Version 7.0`).
+- Windows 11 x64 only. Five scripts declare `#requires -Version 7.0` (`install-mod.ps1`, `uninstall-mod.ps1`, `mod/regenerate-winrt.ps1`, `tests/live-search-test.ps1`, `tools/diagnose.ps1`); the others also run on Windows PowerShell 5.1. Use PowerShell 7+ for consistency.
 - Explorer must use `SeparateProcess=1` (XAML Diagnostics only works in `/factory` processes). Everything must run **non-elevated** or `WM_COPYDATA` IPC fails.
 - The C++/WinRT headers in `mod/generated/` are **not committed** (gitignored). `mod/build-mod.ps1` regenerates them automatically when `winrt/base.h` is missing; force with `.\mod\regenerate-winrt.ps1 -Force`. Regeneration needs the Windows SDK and WinUI/WebView2/SDK.NET.Ref WinMDs in the NuGet cache (see README for the bootstrap commands).
 - `mod/build-mod.ps1` discovers `vcvars64.bat` and the newest Windhawk `windhawk.lib`; `build-nse.ps1` discovers MSVC via `vswhere` and uses CMake + Ninja. Do not hardcode engine/VS versions.
@@ -31,7 +31,6 @@ Compact guidance for work in this repository. The README is the user-facing sour
 - Windhawk metadata blocks in the `.wh.cpp` (`==WindhawkModReadme==` and `==WindhawkModSettings==`) **must contain `/* ... */` comments**, not `//` lines. With line comments the Windhawk UI silently shows no README and no settings.
 - Source `@id` is `everything-search-explorer`; the installed mod key is `local@everything-search-explorer`. Changing that ID creates a new mod and resets its settings.
 - Keep `// @version` in `mod/everything-search-explorer.wh.cpp` and `ESX_VERSION_STRING` in `nse/version.h` in sync; `install-mod.ps1` warns on mismatch.
-- `install-mod.ps1` still prints a line about `Ctrl+Shift+F` setup; that panel no longer exists. Ignore it.
 - Search handoff: `%LOCALAPPDATA%\EverythingSearchExplorer\request-<HWND>.txt` per window, plus a global `request.txt` fallback. Flags: bit 0 = scope, bit 1 = include folders, bit 2 = recursive. Scope + recursive → `path:"..."`; scope without recursive → `parent:"..."`. `max=0` means no limit.
 - Mod log: `%TEMP%\everything-search-explorer.log`. `tools/diagnose.ps1` decodes flags and flags broken states such as scope set with an empty folder.
 - Public docs are English-first (`README.md`); keep `README.it.md` aligned. `docs/DESIGN.md` is partly historical — prefer README and code. `docs/KNOWN-ISSUES.md` is the structured bug ledger; update it when opening/fixing issues.

@@ -186,7 +186,7 @@ Write-Host 'Windhawk mod installed and enabled:' -ForegroundColor Green
 Write-Host "  $key"
 Write-Host "  $target"
 Write-Host ''
-Write-Host 'Open any Explorer window and press Ctrl+F (Ctrl+Shift+F for setup).'
+Write-Host 'Open an Explorer window and press Ctrl+F to focus the search box.'
 if (-not (Test-Path $componentKey)) {
     Write-Host 'The shell component is not registered yet:' -ForegroundColor Yellow
     Write-Host 'download the DLL from the releases page and install it from the panel,'

@@ -1,7 +1,9 @@
 # Design
 
-> This document is partly historical. For the current state prefer `README.md`
-> and the source code.
+> This document describes the original design and keeps historical context.
+> For the current behaviour prefer `README.md` and the source code.
+> Architecture, protocol, PIDL, threading and limits below are still valid;
+> distribution, refresh and native-search notes were updated to the current mod.
 
 ## Goal
 
@@ -24,32 +26,27 @@ Explorer navigate to it.
 
 ## Architecture
 
-```
-                  ┌───────────────────────────── explorer.exe ─────────────────────────────┐
-  search box      │  Windhawk mod (PeekMessageW hook)                                       │
-    │             │      ├─ IShellWindows ─▶ IShellBrowser ─▶ location / active view         │
-    │             │      ├─ writes %LOCALAPPDATA%\EverythingSearchExplorer\request.txt       │
-    │             │      └─ BrowseObject(shell:::{GUID}) or IShellView::Refresh()            │
-    │             │                                                                          │
-    │             │  EverythingSearchNse.dll  (in-proc COM, STA)                            │
-    │             │      IShellFolder2 / IPersistFolder2 / IShellFolderViewCB                 │
-    │             │      │                                                                   │
-    │             │      └─ EnumObjects ─▶ reads request.txt ─▶ bridge::Query ─┐              │
-    └─────────────┴───────────────────────────────────────────────────────────┼──────────────┘
-                                                                              │ WM_COPYDATA
-                                                                              │ QUERY2, dedicated
-                                                                              │ thread, timeout
-                                                                              ▼
-                                                                       Everything.exe
+```mermaid
+flowchart LR
+    subgraph EX["explorer.exe"]
+        direction LR
+        U["XAML search box<br/>type + Enter"] --> M["Windhawk mod<br/>write request file<br/>navigate to results CLSID"]
+        M --> N["EverythingSearchNse.dll<br/>read request · EnumObjects<br/>real-file PIDLs"]
+        N --> V["Explorer results view"]
+    end
+
+    E["Everything.exe<br/>index + search engine"]
+    N <-->|"QUERY2 / WM_COPYDATA"| E
+    V -.->|"update notification"| N
 ```
 
 Three distributed artifacts:
 
-| Artifact | Installed by | Notes |
-|---|---|---|
-| mod `.wh.cpp` | Windhawk (from its UI or site) | source only, no binary |
-| `EverythingSearchNse.dll` | the mod, on explicit click | GitHub release asset |
-| Everything | the user | prerequisite, owned by the user |
+| Artifact | Produced by | Installed by | Notes |
+|---|---|---|---|
+| mod `.wh.cpp` | repository source | `install-mod.ps1` (admin) | compiled to a DLL with MSVC x64 and registered under HKLM; Windhawk UI reads the source in `ModsSource` |
+| `EverythingSearchNse.dll` | `build-nse.ps1` (MSVC) or `tests/run-mingw.ps1` (MinGW) | `install-nse.ps1` (HKCU) | built locally from this repo; no release downloader or setup panel |
+| Everything | voidtools | the user | prerequisite, running non-elevated |
 
 ### Why direct IPC and not `Everything64.dll`
 
@@ -67,24 +64,31 @@ third-party code loaded into the Explorer process).
 
 ## Query transport
 
-### request.txt
+### Request files
 
-`%LOCALAPPDATA%\EverythingSearchExplorer\request.txt`, UTF-8, one
-`key=value` pair per line (split on the **first** `=`):
+`%LOCALAPPDATA%\EverythingSearchExplorer\request-<HWND>.txt`, UTF-8, one
+`key=value` pair per line (split on the **first** `=`). The HWND is the active
+tab/window key; a global `request.txt` is written as a fallback for tools and
+older windows. The per-window file always wins.
 
 ```
 seq=123456789
 max=0
-flags=3
+flags=7
 folder=C:\Users\<user>\Documents
 query=invoice 2026
+filter=date-modified:today
+content=0
 ```
 
-- `seq`: only for change detection; the NSE also compares `query` and `folder`.
-- `flags`: bit 0 = scoped to the folder.
+- `seq`: only for change detection; the NSE also compares `query`, `folder`, `max`,
+  `flags`, `filter` and `content`.
+- `flags`: bit 0 = scoped to the folder, bit 1 = include folders,
+  bit 2 = include subfolders (`path:"..."` instead of `parent:"..."`).
+- `max=0` means no explicit limit (up to the safety ceiling).
 - Atomic write: temporary file + `MoveFileEx(MOVEFILE_REPLACE_EXISTING)`.
 
-The file is deliberately dumb: it survives Explorer restarts and makes testing
+The files are deliberately dumb: they survive Explorer restarts and make testing
 from PowerShell trivial.
 
 ### IPC with Everything
@@ -203,38 +207,34 @@ terminated, because the mod is injected into the next window.
 reloaded), then removes the key, binaries and source. The shell component stays
 installed: use `uninstall-nse.ps1` for that.
 
-## Native search blocking
+## Native search blocking (historical)
 
-Explorer starts search-as-you-type as soon as you type in the box and navigates
-to the Windows Search search folder (`{04731B67-D933-450A-90E6-4ACD2E9408FE}`).
-To stay in the folder view until Enter, the mod blocks that navigation at three
-points, without touching the box text:
+An early version of the mod blocked Explorer's search-as-you-type, which
+navigates to the Windows Search folder (`{04731B67-D933-450A-90E6-4ACD2E9408FE}`).
+It hooked `SHParseDisplayName`, `ShellExecuteExW/W` and
+`IShellBrowser::BrowseObject`, with a `tls_internalNavigation` exemption for its
+own calls.
 
-1. `SHParseDisplayName` — a `search-ms:`/`search:` name is resolved as the
-   starting folder (`g_searchOrigin`), so the view does not change;
-2. `ShellExecuteExW` / `ShellExecuteW` — a `search-ms:` moniker is declared
-   executed without opening anything;
-3. `IShellBrowser::BrowseObject` (vtable slot 11, obtained from
-   `IShellWindows`) — a PIDL pointing to the Windows search folder is declared
-   navigated without navigating. Our folder's PIDLs are explicitly excluded.
-
-The mod's own calls are exempted with `tls_internalNavigation`, otherwise the
-block would also apply to navigation to our virtual folder. `-Trace` builds log
-to `%TEMP%\everything-search-explorer.log` which hook was hit: if a future Windows build uses a
-fourth entry point, the log shows it and it can simply be added.
+**This code was removed.** The current mod replaces Explorer's native search box
+directly in the XAML tree: typing goes into the mod's own `TextBox`, so Explorer
+never starts search-as-you-type. No navigation hook is installed. If a window
+cannot be identified safely the native bar is left untouched; in that case
+Windows Search can still open, by design.
 
 ## Refresh flow
 
-1. The mod writes `request.txt`.
-2. If the window is already on the virtual folder → `IShellView::Refresh()`.
-   Otherwise → `IShellBrowser::BrowseObject(pidl, SBSP_SAMEBROWSER)`.
-   The PIDL comes from `SHParseDisplayName("shell:::{GUID}")` and, if parsing
-   fails, from `CoCreateInstance` + `IPersistFolder2::GetCurFolder` on the DLL.
-3. `Refresh` makes DefView re-enumerate.
-4. `EnumObjects` reads `request.txt`; if `(seq, query, folder, max)` did not
-   change it uses the cache, otherwise it queries Everything.
-5. `MessageSFVCB` handles count and view mode and leaves the rest to DefView's
-   default behaviour (including the re-enumeration).
+1. The mod writes the per-window request file (and the global fallback).
+2. `NavigateToResults()` parses `shell:::{GUID}` into a PIDL and calls
+   `IShellBrowser::BrowseObject(pidl, SBSP_ABSOLUTE | SBSP_SAMEBROWSER)`.
+   If the window was already showing the results folder, browsing to the same
+   PIDL is a no-op, so the mod also sends `SHChangeNotify(SHCNE_UPDATEDIR, ...)`.
+   There is no direct `IShellView::Refresh()` call in the mod.
+3. DefView re-enumerates the virtual folder.
+4. `EnumObjects` reads the per-window request file (falling back to the global
+   one). If `seq` and the cached fields did not change it reuses the cache,
+   otherwise it queries Everything.
+5. `MessageSFVCB` handles item count and view mode and leaves the rest to
+   DefView's default behaviour.
 
 ## Threading and lifetime
 
@@ -261,8 +261,8 @@ fourth entry point, the log shows it and it can simply be added.
 4. **NSE crash = Explorer crash**: no `try/catch` around unknown code, no hooks
    inside the NSE, no calls to `Everything64.dll`.
 5. **UIPI**: if Everything runs elevated, a non-elevated process cannot send it
-   `WM_COPYDATA`. The panel detects this (window present but no reply to
-   `WM_USER`) and asks to disable elevation.
+   `WM_COPYDATA`. There is no detection panel any more: Everything must simply
+   run non-elevated, as stated in `README.md`.
 6. **Protocol version**: `QUERY2` exists since Everything 1.4.1. Older versions
    are not supported.
 
@@ -277,7 +277,8 @@ involved):
 - `CF_HDROP` and `Shell ID List Array` → `S_OK`, with the right path in
   `DROPFILES`;
 - `GetDetailsEx` → `PKEY_ItemTypeText` = "C++ Source File", `PKEY_Size` = bytes;
-- the mod builds with `-Wall -Wextra` and its version matches `nse/version.h`.
+- the NSE builds with `-Wall -Wextra` under MinGW; the mod builds with MSVC x64
+  and its version is kept in sync with `nse/version.h`.
 
 Verified live in `explorer.exe` (Windows 11 x64, Everything 1.5.0.1423):
 
@@ -301,9 +302,10 @@ Bugs found and fixed during this test:
 2. **`explorer.exe shell:::{GUID}`** does not open the folder and falls back to
    "Documents": you need `SHParseDisplayName` + `ShellExecuteEx` with
    `SEE_MASK_INVOKEIDLIST|SEE_MASK_IDLIST`, or `BrowseObject` from inside.
-3. `LocationURL` is empty for a namespace extension: to tell whether the window
-   already shows the folder, `NavigateWindow` compares `IPersist::GetClassID`
-   of the active view with our CLSID and only then uses `IShellView::Refresh()`.
+3. `LocationURL` is empty for a namespace extension: `IsResultsFolder()` now
+   compares `IPersist::GetClassID` of the active view with our CLSID, and a
+   second search in the same view is refreshed with `SHChangeNotify(UPDATEDIR)`
+   rather than `IShellView::Refresh()`.
 4. **Context menu**: building it with `SHCreateDefaultContextMenu` +
    `DEFCONTEXTMENU(psf=this)`, or with a wrapper returning a single "Open" item
    for `CMF_DEFAULTONLY`, crashed `SHELL32.dll` on right click. The real shell,
@@ -315,21 +317,6 @@ Bugs found and fixed during this test:
 6. **Initial PIDL**: `SHParseDisplayName("shell:::{GUID}")` can fail with
    `0x80070003` right after an Explorer restart while `CoCreateInstance`
    succeeds; the mod falls back to `IPersistFolder2::GetCurFolder` of the DLL.
-
-## Roadmap
-
-- **v1.1** – popup-free input: `ParseDisplayName` accepts
-  `::{GUID}\<query>` so the address bar becomes the search field.
-- **v1.2** – live update with debounce (targeted Refresh, selection preserved),
-  `IncludeFolders=on`.
-- **v1.3** (done) – `MapColumnToSCID` + `GetDetailsEx` for the Content view,
-  `SFVM_DEFVIEWMODE = FVM_CONTENT`.
-- **v1.4** – column localization (`GetDetailsOf` is in English),
-  thumbnails for images/video.
-- **v2** – `BindToObject` to navigate into result folders; full `IShellFolder2`;
-  virtualization beyond 5,000 results.
-- **Distribution** – GitHub release with versioned DLL + SHA256, binary signing,
-  draft of the mod on windhawk.net.
 
 ## Test checklist
 
