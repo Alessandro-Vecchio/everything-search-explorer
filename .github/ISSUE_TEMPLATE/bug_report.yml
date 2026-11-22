@@ -72,11 +72,11 @@ body:
     attributes:
       label: Request file
       description: Content of the relevant `request-<HWND>.txt`.
-      render: text
 
   - type: checkboxes
     id: checks
     attributes:
+      label: Before submitting
       options:
         - label: I redacted private paths and file names
           required: true
