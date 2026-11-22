@@ -93,9 +93,8 @@ native bar is never touched when the window cannot be identified safely.
 
 namespace {
 
-// Phase 1: passive observer only. Collect the structural relation reported by
-// OnVisualTreeChange for every FileExplorerSearchBox; never query the tree and
-// never modify it. No islands, no hiding, no subclassing.
+// Observer mode: collect structural relations from OnVisualTreeChange;
+// never query or modify the tree.
 constexpr bool kObserverOnly = true;
 constexpr bool kCallbackProbeOnly = true;
 constexpr bool kReplaceNative = true;
@@ -1788,7 +1787,6 @@ private:
             return S_OK;
         }
 
-        // Passive phase: only record what XAML reports. No mutation, no query.
         RecordObservedBox(reinterpret_cast<uintptr_t>(this), relation, element, added);
         if (mutationType != Add || !m_active) return S_OK;
         m_isMicrosoftUIXaml =
@@ -2160,7 +2158,7 @@ LRESULT CALLBACK OwnerChannelProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
             return 0;
         }
 
-        // 1) Re-verify the collection and the native element before writing.
+        // Re-verify in case the tree changed since the request.
         tx.countHr = service->GetCollectionCount(request->collection,
                                                   &tx.beforeSize);
         tx.nativeBeforeHr = ServiceFindHandleIndex(
@@ -2183,7 +2181,7 @@ LRESULT CALLBACK OwnerChannelProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
             return 0;
         }
 
-        // 2) Insert at native index + 1. The native control is not touched.
+        // Insert after the native control; remove it only once the new one is confirmed.
         const unsigned insertAt = request->index + 1;
         tx.addHr = service->AddChild(request->collection, request->created, insertAt);
         Log("OWNER ADD AddChild hr=0x%08X index=%u",
@@ -2204,8 +2202,7 @@ LRESULT CALLBACK OwnerChannelProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
             static_cast<unsigned long>(tx.ourHr), tx.ourIndex,
             static_cast<unsigned long>(tx.nativeAfterHr), tx.nativeAfterIndex);
 
-        // 2b.3: only now remove the native control, after our TextBox is
-        // confirmed present at index + 1.
+        // Remove the native control only after our TextBox is confirmed at index + 1.
         if (request->replaceNative && SUCCEEDED(tx.addHr) && SUCCEEDED(tx.ourHr)) {
             tx.nativeRemoveFindHr = ServiceFindHandleIndex(
                 service, request->collection, request->native,
@@ -2246,8 +2243,7 @@ LRESULT CALLBACK OwnerChannelProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
                 tx.ourAfterRemoveIndex);
         }
 
-        // The replacement state stays in the tree for a few seconds. Rollback
-        // is a separate message so the owner thread is never blocked here.
+        // Rollback is a separate message so the owner thread is never blocked here.
         if (SUCCEEDED(tx.addHr) && SUCCEEDED(tx.ourHr)) {
             state->insertTick = GetTickCount64();
             state->replacementActive = true;
@@ -2910,7 +2906,7 @@ static void ApplySearchOptions(HWND frame, DWORD flags, DWORD maxResults,
     request.maxResults = maxResults;
     request.filter = filter;
     request.contentSearch = contentSearch;
-    request.seq = ::GetTickCount();
+    request.seq = esx::NextRequestSeq();
     if (!esx::WriteRequestForWindow(key, request)) {
         Log("options: could not write request for key=%p", key);
         return;
@@ -3186,7 +3182,7 @@ static void ReplaceSearchBoxForState(const std::shared_ptr<WindowState>& state) 
                 pid, static_cast<unsigned long long>(generation),
                 static_cast<unsigned long long>(nativeHandle), service);
 
-            // C1.1/C1.2: re-acquire the native element and verify identity.
+            // The handle may be stale; fail before touching the tree.
             winrt::com_ptr<::IInspectable> nativeRaw{nullptr};
             HRESULT hr = diagnostics->GetIInspectableFromHandle(nativeHandle,
                                                                 nativeRaw.put());
@@ -3200,7 +3196,7 @@ static void ReplaceSearchBoxForState(const std::shared_ptr<WindowState>& state) 
             auto element = nativeInspectable.as<
                 winrt::Microsoft::UI::Xaml::FrameworkElement>();
 
-            // C1.3: acquire Panel.Children inside this dispatch only.
+            // Register the collection on this dispatcher; XAML objects are thread-affine.
             InstanceHandle collection = 0;
             HRESULT collectionHr = E_UNEXPECTED;
             auto parent = winrt::Microsoft::UI::Xaml::Media::VisualTreeHelper::GetParent(
@@ -3218,7 +3214,7 @@ static void ReplaceSearchBoxForState(const std::shared_ptr<WindowState>& state) 
                 static_cast<unsigned long long>(collection), tid);
             if (FAILED(collectionHr) || !collection) return collectionHr;
 
-            // C1.6: verify collection and native element before any mutation.
+            // The tree may have changed since the native handle was captured.
             unsigned beforeSize = 0;
             const HRESULT countHr = service->GetCollectionCount(collection,
                                                                 &beforeSize);
@@ -3237,7 +3233,7 @@ static void ReplaceSearchBoxForState(const std::shared_ptr<WindowState>& state) 
                 return E_ABORT;
             }
 
-            // C1.4/C1.5: create the TextBox and register it in this dispatch.
+            // Create and register the TextBox on the same dispatcher.
             auto box = winrt::Microsoft::UI::Xaml::Controls::TextBox();
             box.PlaceholderText(L"Cerca con Everything");
             // Restore this tab's last query; a brand-new tab starts empty.
@@ -3360,7 +3356,6 @@ static void ReplaceSearchBoxForState(const std::shared_ptr<WindowState>& state) 
                 static_cast<unsigned long long>(created));
             if (FAILED(regHr) || !created) return regHr;
 
-            // C3.1: AddChild on the dispatcher, native untouched.
             const unsigned insertAt = nativeIndex + 1;
             const HRESULT addHr = service->AddChild(collection, created, insertAt);
             Log("C3 AddChild hr=0x%08X index=%u tid=%lu",
@@ -3375,7 +3370,6 @@ static void ReplaceSearchBoxForState(const std::shared_ptr<WindowState>& state) 
                 diagnostics.get(), service, state, frame, element);
             Log("C3 search buttons hr=0x%08X", static_cast<unsigned long>(barHr));
 
-            // C3.2/C3.3: verify count and our element identity.
             unsigned afterSize = 0;
             const HRESULT afterCountHr = service->GetCollectionCount(collection,
                                                                      &afterSize);
@@ -3397,7 +3391,7 @@ static void ReplaceSearchBoxForState(const std::shared_ptr<WindowState>& state) 
                 SUCCEEDED(ourHr) && ourIndex == insertAt &&
                 SUCCEEDED(nativeAfterHr) && nativeAfterIndex == nativeIndex;
 
-            // C3.4: keep the native object alive before removing its handle.
+            // Keep the native object alive: its handle dies after RemoveChild.
             winrt::com_ptr<::IInspectable> nativeObject{nullptr};
             HRESULT nativeObjectHr = E_UNEXPECTED;
             if (diagnostics) {
@@ -3562,7 +3556,7 @@ void RestoreReplacement(bool synchronous) {
             Log("OWNER ROLLBACK skipped: channel gone frame=%p", state->frame);
             continue;
         }
-        // The C3 path never allocates a rollback transaction.
+        // Rollback transactions belong to the owner-add path only.
         if (state->rollbackTx) {
             state->rollbackTx->ready.store(false);
         }
@@ -3807,13 +3801,12 @@ HRESULT WaitForApartmentHandles(HANDLE* handles, ULONG count, DWORD timeout,
         count, handles, selectedHandle);
 }
 
-// Start observing before new Explorer windows are created. Existing windows
-// are not replayed by AdviseVisualTreeChange; they are logged by ScanFrames as
-// "left untouched" in this phase.
+// Install the observer at startup: AdviseVisualTreeChange does not replay
+// windows that are already open.
 void EnsureDiagnosticsObserver() {
     if (!kObserverOnly) return;
-    // Stability test: do not install the XAML Diagnostics TAP in the shell
-    // process. UIA inventory and the coordinator stay active there.
+    // Skip the shell process: the XAML TAP is unstable there; UIA and the
+    // coordinator stay active.
     if (wcsstr(GetCommandLineW(), L"/factory") == nullptr) {
         Log("OBSERVER skipped in shell pid=%lu", GetCurrentProcessId());
         return;
@@ -3870,36 +3863,36 @@ bool WriteSearchRequest(const std::wstring& query, const std::wstring& folder, H
                      std::to_wstring(reinterpret_cast<ULONG_PTR>(frame)) + L".txt";
     }
 
-    FILETIME now{};
-    GetSystemTimeAsFileTime(&now);
-    const unsigned sequence = static_cast<unsigned>(
-        ((static_cast<unsigned long long>(now.dwHighDateTime) << 32) |
-         now.dwLowDateTime) & 0xffffffffull);
+    // Start from the tab's request so a new query keeps its options.
+    esx::QueryRequest request{};
+    const bool hadRequest = esx::ReadRequestForWindow(frame, request);
 
-    // bit 0 = scope to the folder the search started from, bit 1 = folders.
+    // The folder decides whether to scope; the options menu decides how.
+    bool recursive = true;
+    if (hadRequest && (request.flags & esx::ScopeToFolder)) {
+        recursive = (request.flags & esx::IncludeSubfolders) != 0;
+    }
     const bool scoped = g_scopeToFolder && !folder.empty();
-    const unsigned flags = 2u | (scoped ? 1u : 0u) | (scoped ? 4u : 0u);
+    std::uint32_t flags = static_cast<std::uint32_t>(esx::IncludeFolders);
+    if (scoped) {
+        flags |= static_cast<std::uint32_t>(esx::ScopeToFolder);
+        if (recursive) flags |= static_cast<std::uint32_t>(esx::IncludeSubfolders);
+    }
 
-    esx::QueryRequest request;
-    request.seq = sequence;
-    request.maxResults = g_maxResults;
+    request.maxResults = g_maxResults;  // the mod setting wins over a stale file
     request.flags = flags;
     request.folder = scoped ? folder : std::wstring();
     request.query = query;
+    request.seq = esx::NextRequestSeq();
 
-    // Use the shared writer so both files get a unique temp name. The old
-    // path + L".tmp" made every window fight over request.txt.tmp with
-    // dwShareMode = 0, so a simultaneous search could fail to be written.
+    // Unique temps avoid collisions between simultaneous searches.
     const bool global = esx::WriteRequestFileTo(globalPath, request);
     const bool perWindow = windowPath.empty() || esx::WriteRequestFileTo(windowPath, request);
     Log("writing search request frame=%p flags=%u folder='%ls' query='%ls' "
         "global=%d perWindow=%d",
         frame, flags, folder.c_str(), query.c_str(), global ? 1 : 0, perWindow ? 1 : 0);
 
-    // The extension reads the per-window file; the global one only keeps
-    // external tools working. A failed compatibility write must not suppress
-    // navigation when the real handoff succeeded. With no window key the
-    // global file is the only handoff, so it stays mandatory there.
+    // The per-window file is the handoff; the global one is for tools.
     return windowPath.empty() ? global : perWindow;
 }
 
@@ -4650,8 +4643,7 @@ void UnregisterLoadedXamlFactories() {
 }
 
 // Loading WinAppSDK 3.3 next to Explorer's in-box XAML crashes Explorer while
-// its XAML island is still being built. The caller only invokes this after the
-// first search shortcut, i.e. on a warm process, which is the stable case.
+// its XAML island is still being built.
 HRESULT EnsureXamlRuntime() {
     std::call_once(g_xamlRuntimeOnce, []() {
         LogLoadedXamlRuntime("before activation");
@@ -4836,10 +4828,9 @@ HRESULT CreateSession(HWND frame) {
                 }
 
                 // Prefer the main mod's overlay when it is active; otherwise
-                // submit directly from this spike. Do the work right here on
-                // Explorer's XAML dispatcher: PostThreadMessage messages were
-                // consumed by CoWaitForMultipleHandles before the coordinator
-                // could see them.
+                // submit directly. Do the work right here on Explorer's XAML
+                // dispatcher: PostThreadMessage messages were consumed by
+                // CoWaitForMultipleHandles before the coordinator could see them.
                 HWND overlay = reinterpret_cast<HWND>(
                     GetPropW(frame, L"EverythingSearchBoxOverlay.Handle"));
                 HWND edit = IsWindow(overlay)
@@ -5081,10 +5072,6 @@ DWORD WINAPI CoordinatorThread(LPVOID) {
         g_keyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, KeyboardHookProc, nullptr, 0);
         Log("keyboard hook=%p", g_keyboardHook);
         EnsureDiagnosticsObserver();
-        // XAML runtime bootstrap and dispatcher creation are deferred to
-        // CreateSession, which runs as soon as the native search box exists.
-        // Scan immediately: a visible native bar before the replacement is
-        // the delay we are trying to remove.
 
         ULONGLONG lastInventory = 0;
         ULONGLONG lastReplacementAttempt = 0;
@@ -5265,7 +5252,7 @@ extern "C" BOOL Wh_ModInit() {
     // The observer must run in every Explorer process, including the shell:
     // normal folder windows are hosted there. Earlier crashes in the shell were
     // caused by the WH_GETMESSAGE hook and by another Windhawk mod, both now
-    // removed/disabled. No XAML mutation happens in this phase.
+    // removed/disabled. No XAML mutation happens in observer mode.
     g_probeAllowed.store(true);
     Log("PROBE enabled pid=%lu cmd='%ls'", GetCurrentProcessId(),
         GetCommandLineW());

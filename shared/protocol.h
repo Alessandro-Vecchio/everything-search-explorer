@@ -1,7 +1,5 @@
-// Wire format shared by the Windhawk mod and the namespace extension: the mod
-// describes the query in a small text file, the extension reads it when
-// Explorer enumerates the virtual folder. Keep this header free of C++20-only
-// constructs so any recent MSVC/clang-cl can include it.
+// Wire format shared by the mod and the NSE. Keep C++20 constructs out:
+// both builds must be able to include this header.
 #pragma once
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -98,10 +96,7 @@ inline std::wstring GetRequestFilePath() {
     return dir + L"\\" + kRequestFileName;
 }
 
-// Per-window handoff. The key is the top-level Explorer frame HWND, the same
-// identity the mod uses for its per-window XAML state. Without this, the last
-// search in any window overwrites the single global file and a refresh in an
-// older window adopts the newer query.
+// Per-window files stop one window's search from being adopted by another.
 inline std::wstring GetRequestFilePath(HWND frame) {
     if (!frame) return GetRequestFilePath();
     const std::wstring dir = GetDataDir();
@@ -121,6 +116,14 @@ inline std::string SerializeRequest(const QueryRequest& r) {
     s += "filter=" + WideToUtf8(r.filter) + "\n";
     s += "content=" + std::to_string(r.contentSearch ? 1 : 0) + "\n";
     return s;
+}
+
+// Monotonic: a repeated seq with otherwise identical fields makes the NSE
+// skip the request as unchanged.
+inline std::uint32_t NextRequestSeq() {
+    static std::atomic<std::uint32_t> counter{
+        static_cast<std::uint32_t>(::GetTickCount64())};
+    return counter.fetch_add(1, std::memory_order_relaxed);
 }
 
 inline bool ParseRequest(std::string_view text, QueryRequest& out) {
@@ -176,9 +179,7 @@ inline bool ReadRequestFileFrom(const std::wstring& path, QueryRequest& out) {
 
 inline bool WriteRequestFileTo(const std::wstring& path, const QueryRequest& r) {
     if (path.empty()) return false;
-    // A unique temporary file per writer avoids interleaved writes when two
-    // windows/tabs submit at the same time; the rename below stays atomic and
-    // last-writer-wins. The counter also separates writes from the same thread.
+    // A unique temp per writer avoids collisions between concurrent searches.
     static std::atomic<unsigned long long> counter{0};
     const std::wstring tmp = path + L"." + std::to_wstring(::GetCurrentProcessId()) + L"." +
                              std::to_wstring(::GetCurrentThreadId()) + L"." +
@@ -211,14 +212,9 @@ inline bool WriteRequestFile(const QueryRequest& r) {
     return WriteRequestFileTo(GetRequestFilePath(), r);
 }
 
-// Write both the per-window snapshot and the legacy global file. The global
-// file keeps tools/tests working; the extension never uses it for enumeration
-// when a per-window file is available.
+// Write the per-window snapshot and the global file for tools. The extension
+// only reads the global file when no per-window file exists.
 inline bool WriteRequestForWindow(HWND frame, const QueryRequest& r) {
-    // The global file is a compatibility fallback; the per-window snapshot is
-    // what the extension reads. A failed compatibility write must not make a
-    // successful handoff look like a failure. Without a window key the global
-    // file is the only handoff, so it stays mandatory in that case.
     const bool global = WriteRequestFile(r);
     if (!frame) return global;
     const bool perWindow = WriteRequestFileTo(GetRequestFilePath(frame), r);
