@@ -33,4 +33,4 @@ The temporary startup kill-switch described in the original investigation is
 **no longer present** in the mod. The fixes that did survive are the explicit
 stop/join of the mod's threads in `Wh_ModUninit` and the `detach()` instead of a
 double `Release` on the COM stream; see
-`docs/DIRECT-XAML-REPLACEMENT.md` → *Uninitialize*.
+[docs/DIRECT-XAML-REPLACEMENT.md](DIRECT-XAML-REPLACEMENT.md) → *Uninitialize*.

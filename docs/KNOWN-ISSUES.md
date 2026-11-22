@@ -1,14 +1,14 @@
 # Known issues
 
 Structured ledger of the open problems. The short user-facing list lives in
-`README.md` → *Known limitations / open issues*; this file keeps the evidence,
+[README.md](../README.md) → *Known limitations / open issues*; this file keeps the evidence,
 hypotheses and next steps so work can resume without rediscovering them.
 
 Use `tools/diagnose.ps1` to produce the evidence mentioned below.
 
 ---
 
-## ES-01 — `Current folder` scope lost on a second search — OPEN, high
+## ES-01 - `Current folder` scope lost on a second search - OPEN, high
 
 **Symptom.** After searching from a real folder, a second search submitted from
 inside the results view loses the origin folder. Selecting *Current folder*
@@ -47,7 +47,7 @@ if the folder is still empty, keep *Current folder* disabled and do not write a
 
 ---
 
-## ES-02 — Second search with many results renders late — PARKED
+## ES-02 - Second search with many results renders late - PARKED
 
 **Symptom.** After a second consecutive search with a large result set, the new
 list becomes visible only after the whole re-enumeration finishes.
@@ -62,7 +62,7 @@ render was considered and parked.
 
 ---
 
-## ES-03 — Legacy "Organize" bar reappears — PARKED (accepted)
+## ES-03 - Legacy "Organize" bar reappears - PARKED (accepted)
 
 **Symptom.** After a search, normal folders in the same window can show the
 legacy "Organize" command bar again.
@@ -75,7 +75,7 @@ deterministically.
 
 ---
 
-## ES-04 — Window/tab title stays `Everything Search` — PARKED
+## ES-04 - Window/tab title stays `Everything Search` - PARKED
 
 **Symptom.** Title remains `Everything Search` instead of
 `<query> - Search Results in ...`.
@@ -85,7 +85,7 @@ there is no hook to supply a dynamic title.
 
 ---
 
-## ES-05 — Desktop `Everything Search` icon reappears — PARKED
+## ES-05 - Desktop `Everything Search` icon reappears - PARKED
 
 **Symptom.** An `Everything Search` icon on the desktop can reappear
 intermittently.
@@ -95,7 +95,7 @@ registration problem. No functional impact.
 
 ---
 
-## ES-06 — First options-menu selection sometimes looks ineffective — UNDER OBSERVATION
+## ES-06 - First options-menu selection sometimes looks ineffective - UNDER OBSERVATION
 
 **Symptom.** The user reported that selecting a *Type* filter did not seem to
 change results on first use, then worked on a later search. Not confirmed.

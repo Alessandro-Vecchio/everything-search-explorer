@@ -15,8 +15,8 @@ Before opening a PR:
 5. Keep changes small and separate bug fixes from new features.
 
 The most fragile and most useful areas to improve are listed in
-`README.md` → *Known limitations / open issues*.
+[README.md](README.md) → *Known limitations / open issues*.
 
 There is no full-time maintainer: PRs may stay open for a long time.
 
-[Italiano](README.it.md)
+[README in italiano](README.it.md)

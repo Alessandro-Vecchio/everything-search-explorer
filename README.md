@@ -1,6 +1,17 @@
 # Everything Search Explorer
 
-> **⚠️ WORK IN PROGRESS — NOT A FINISHED PRODUCT.**
+[![CI](https://github.com/Alessandro-Vecchio/everything-search-explorer/actions/workflows/ci.yml/badge.svg)](https://github.com/Alessandro-Vecchio/everything-search-explorer/actions/workflows/ci.yml)
+![Status: work in progress](https://img.shields.io/badge/status-work%20in%20progress-orange)
+![Platform: Windows 11 x64](https://img.shields.io/badge/Windows-11%20x64-blue)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+Instant Everything-powered search inside Explorer: the native search box is replaced in XAML and results appear as a real folder.
+
+![Everything Search Explorer demo](docs/assets/search-demo.gif)
+
+*Demo from This PC: virtual folders have no filesystem path, so the search is global. From a real folder, the default scope is that folder and its subfolders.*
+
+> **⚠️ WORK IN PROGRESS - NOT A FINISHED PRODUCT.**
 > This repository is a construction site published to keep track of experiments
 > and collect feedback. The mod manipulates Explorer's XAML visual tree through
 > **XAML Diagnostics**, an unsupported API: a Windows update can break it at any
@@ -12,11 +23,10 @@
 >
 > [Italiano](README.it.md)
 
-Instant file search with [Everything](https://www.voidtools.com/) **inside**
-File Explorer windows: the native search box is replaced in Explorer's XAML
-visual tree, with no overlay and no extra window. Results are a real folder
-served by a COM namespace extension, so icons, context menus, drag & drop and
-properties remain Explorer's native ones.
+- Native Explorer UI, not a separate search window.
+- Everything speed and modifiers, including experimental per-folder scope.
+- Real files in the result list, with native context menus and drag & drop.
+- Independent search state for each tab.
 
 ## Components
 
@@ -30,15 +40,17 @@ The NSE **does not link or load `Everything64.dll`**: it speaks the documented
 IPC protocol (`QUERY2` over `WM_COPYDATA`) from a dedicated thread with timeouts,
 so a slow or missing Everything never blocks Explorer.
 
-```
-Ctrl+F / XAML box → Enter
-        │
-        ├─ mod: writes request-<HWND>.txt  (%LOCALAPPDATA%\EverythingSearchExplorer)
-        └─ mod: BrowseObject / Refresh to shell:::{7B39...4F60}
-                        │
-                 NSE in explorer.exe ──WM_COPYDATA/QUERY2──▶ Everything.exe
-                        │
-                 results = PIDLs of real files in the Explorer view
+```mermaid
+flowchart LR
+    subgraph EX["explorer.exe"]
+        direction LR
+        U["XAML search box<br/>type + Enter"] --> M["Windhawk mod<br/>write request file<br/>navigate to results CLSID"]
+        M --> N["EverythingSearchNse.dll<br/>read request · EnumObjects<br/>real-file PIDLs"]
+        N --> V["Explorer results view"]
+    end
+    E["Everything.exe<br/>index + search engine"]
+    N <-->|"QUERY2 / WM_COPYDATA"| E
+    V -.->|"update notification"| N
 ```
 
 ## Usage
@@ -49,6 +61,16 @@ Ctrl+F / XAML box → Enter
    `Everything Search` folder with name, type, size and date (folders included).
 3. Use the **Search options** button in the command bar to filter.
 4. **Back** returns to the starting folder.
+
+### Scope
+
+By default the search is limited to the folder currently shown in Explorer,
+including its subfolders. It does not search the whole disk. Virtual folders
+such as "This PC" have no filesystem path, so the search is global there.
+
+The **Search options** menu can switch between **All subfolders** (recursive,
+`path:`) and **Current folder** (direct children only, `parent:`). The latter is
+still experimental.
 
 The mod keeps separate state per tab: box text, caret and results of one tab are
 not adopted by another.
@@ -72,121 +94,79 @@ the next query; they do not appear in the text box.
 `Current folder` is available only when a real folder exists to scope to: it
 stays disabled in virtual folders such as "This PC".
 
-## Requirements
+## Setup
 
-- Windows 11 x64 (the only tested environment), Explorer with separate processes:
+Requirements:
+
+- Windows 11 x64, PowerShell 7+, Visual Studio Build Tools 2022, CMake,
+  Windhawk, Everything 1.4.1+ running non-elevated.
+- Explorer with separate processes:
 
   ```powershell
   Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' SeparateProcess 1 -Type DWord
   ```
 
-  This is required because XAML Diagnostics is available only in `/factory`
-  processes.
-- Windhawk with the `local@everything-search-explorer` mod enabled.
-- PowerShell 7+ to run the scripts (`#requires -Version 7.0`); Windows PowerShell
-  5.1 is not enough.
-- Everything 1.4.1+ running **non-elevated** (otherwise `explorer.exe` cannot send
-  it `WM_COPYDATA`; use the Everything service).
-- The namespace extension DLL installed (see below).
+  Restart Explorer after running this.
 
-## Initial setup (from a clean clone)
-
-1. **Tools** (once):
-
-   ```powershell
-   winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
-   winget install Windhawk.Windhawk
-   winget install voidtools.Everything
-   ```
-
-   You also need the **Windows SDK** (for `cppwinrt.exe`) and the WinUI WinMD
-   files in the NuGet cache. If they are not there yet, populate them with a
-   temporary project:
-
-   ```powershell
-   mkdir "$env:TEMP\esx-winmd"; cd "$env:TEMP\esx-winmd"
-   dotnet new classlib -f net8.0
-   dotnet add package Microsoft.WindowsAppSDK
-   dotnet add package Microsoft.Web.WebView2
-   dotnet add package Microsoft.Windows.SDK.NET.Ref
-   dotnet restore
-   ```
-
-   `mod\regenerate-winrt.ps1` finds the paths automatically and generates the
-   headers. If a WinMD is missing, the script says which package to install.
-
-2. **Configure Explorer** with `SeparateProcess=1` (command in *Requirements*),
-   then restart Explorer.
-
-3. **Build the NSE** (CMake + Ninja, already in the Build Tools):
-
-   ```powershell
-   .\build-nse.ps1
-   ```
-
-   This produces `dist\bin\EverythingSearchNse.dll`.
-
-4. **Register the NSE**: `.\install-nse.ps1 -RestartExplorer`.
-
-5. **Build the Windhawk mod**: `.\mod\build-mod.ps1`. On the first run it
-   generates the C++/WinRT headers by itself and produces
-   `dist\windhawk\local@everything-search-explorer_0.5.0_<build>.dll`.
-
-6. **Install the mod**: `.\install-mod.ps1` (asks for admin) or load the DLL from
-   Windhawk's panel.
-
-7. **Quick check**: `.\tools\open-results.ps1 -Query "*.ps1" -Global` opens the results
-   folder without going through the mod. The end-to-end probe
-   `.\tests\run-mingw.ps1` requires MinGW-w64: it uses `g++.exe` from `PATH`,
-   falls back to `$env:TEMP\mingw\mingw64\bin\g++.exe`, or accepts `-Gcc <path>`.
-
-## Installation
+Install the tools:
 
 ```powershell
-.\build-nse.ps1                    # NSE: builds dist\bin\EverythingSearchNse.dll
-.\install-nse.ps1                  # NSE: copies the DLL to %LOCALAPPDATA% and registers the HKCU CLSID
-.\mod\build-mod.ps1            # mod: builds the .wh.cpp into dist\windhawk
-.\install-mod.ps1              # mod: registers in HKLM, restarts Windhawk (admin)
+winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+winget install Kitware.CMake
+winget install Windhawk.Windhawk
+winget install voidtools.Everything
 ```
 
-`install-mod.ps1` uses `mod\build-mod.ps1`, which produces
-`dist\windhawk\local@everything-search-explorer_0.5.0_<build>.dll`. The NSE DLL
-folder is versioned because a DLL already mapped by Explorer cannot be
-overwritten. To remove everything: `.\uninstall-mod.ps1` and `.\uninstall-nse.ps1`.
-
-Architecture and protocol details: `docs/DIRECT-XAML-REPLACEMENT.md` and
-`docs/DESIGN.md` (the latter is partly historical: for the current state the
-README and the code win).
-
-## Build and test
+The Windows SDK and the WinUI WinMD files must be available (SDK for
+`cppwinrt.exe`; WinMDs in the NuGet cache). If the WinMDs are missing, populate
+the cache with a temporary project:
 
 ```powershell
-.\mod\build-mod.ps1                          # Windhawk mod (MSVC x64)
-.\tests\run-mingw.ps1 -Folder C:\Windows -Query '*.exe' -Max 20   # NSE without MSVC + end-to-end probe
+mkdir "$env:TEMP\esx-winmd"; cd "$env:TEMP\esx-winmd"
+dotnet new classlib -f net8.0
+dotnet add package Microsoft.WindowsAppSDK
+dotnet add package Microsoft.Web.WebView2
+dotnet add package Microsoft.Windows.SDK.NET.Ref
+dotnet restore
 ```
 
-The C++/WinRT headers are **not in the repo**: `mod\regenerate-winrt.ps1`
-recreates them from the Windows SDK and NuGet when missing (~30 MB, 254 files).
-The packages `Microsoft.WindowsAppSDK.*`, `Microsoft.Web.WebView2` and
-`Microsoft.Windows.SDK.NET.Ref` must be in the NuGet cache; to force
-regeneration:
+Build and install:
 
 ```powershell
-.\mod\regenerate-winrt.ps1 -Force
+.\build-nse.ps1                 # NSE -> dist\bin\EverythingSearchNse.dll
+.\install-nse.ps1               # register the NSE (HKCU)
+.\mod\build-mod.ps1             # mod -> dist\windhawk
+.\install-mod.ps1               # register the mod (admin) and restart Windhawk
 ```
 
-The mod log goes to `%TEMP%\everything-search-explorer.log`. To inspect a
-problem, run `.\tools\diagnose.ps1`: it decodes every request file, flags broken
-combinations (such as a scope bit with an empty folder) and shows the related
-log events for the same window. Open problems are tracked in
-`docs/KNOWN-ISSUES.md`.
+Restart Explorer after `.\install-nse.ps1`. The script does not restart it, and
+skipping this can leave the results folder empty.
+
+`mod\build-mod.ps1` generates the C++/WinRT headers on first run. To remove
+everything: `.\uninstall-mod.ps1` and `.\uninstall-nse.ps1`.
+
+Quick check: `.\tools\open-results.ps1 -Query "*.ps1" -Global` opens the results
+folder without the mod.
+
+For architecture details see [docs/DIRECT-XAML-REPLACEMENT.md](docs/DIRECT-XAML-REPLACEMENT.md);
+[docs/DESIGN.md](docs/DESIGN.md) is partly historical.
+
+## Troubleshooting
+
+**The search box is not replaced.** Confirm `SeparateProcess=1`, restart Explorer,
+and check that another mod is not using XAML Diagnostics.
+
+**Need help?** Run `.\tools\diagnose.ps1`, redact private paths, and attach the
+output to an issue. Known problems are listed in
+[docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md).
+
+**The results folder is empty.** Check that Everything is running non-elevated,
+then rebuild and reinstall the NSE:
 
 ```powershell
-.\tools\open-results.ps1 -Query "invoice" -Folder "C:\Users\<user>\Documents"
+.\build-nse.ps1
+.\install-nse.ps1
 ```
-
-`open-results.ps1` writes the request and opens the virtual folder without the mod:
-useful for testing the NSE alone.
 
 ## Known limitations / open issues
 
@@ -221,19 +201,23 @@ This is the important part: the project **is not ready**.
 ## Structure
 
 ```
-shared/protocol.h        request format (mod ↔ NSE), flags and filters
+shared/protocol.h        request format (mod - NSE), flags and filters
 shared/everything_ipc.h  minimal QUERY2 protocol definitions
 nse/                     namespace extension + IPC client
 mod/                     Windhawk mod: XAML replacement of the native bar
 mod/regenerate-winrt.ps1 generates the C++/WinRT headers (not committed)
 tests/                   NSE probes, raw IPC, live menu/view tests
-tools/open-results.ps1            test trigger without the mod
+tools/open-results.ps1   test trigger without the mod
 tools/diagnose.ps1       correlates the mod log with per-tab request files
 docs/DEBUGGING.md        crash-test methodology and lessons learned
 docs/KNOWN-ISSUES.md     structured ledger of open problems
 ```
 
+## Contributing / security
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
+
 ## License
 
-MIT — see `LICENSE`. Generated C++/WinRT headers and Windhawk headers remain
-the property of their respective owners; their notices are in the files.
+MIT - see [LICENSE](LICENSE). Generated C++/WinRT headers and Windhawk headers
+remain the property of their respective owners; their notices are in the files.

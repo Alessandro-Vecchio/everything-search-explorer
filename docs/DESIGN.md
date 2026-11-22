@@ -1,7 +1,7 @@
 # Design
 
 > This document describes the original design and keeps historical context.
-> For the current behaviour prefer `README.md` and the source code.
+> For the current behaviour prefer [README.md](../README.md) and the source code.
 > Architecture, protocol, PIDL, threading and limits below are still valid;
 > distribution, refresh and native-search notes were updated to the current mod.
 
@@ -176,7 +176,7 @@ The mod cannot carry a binary (it is compiled from source inside Windhawk), so
 the NSE DLL is installed separately with `install-nse.ps1`, which registers the CLSID
 under `HKCU\Software\Classes\CLSID\{GUID}` (with
 `ThreadingModel=Apartment`) and stores version and path in
-`HKCU\Software\EverythingSearchExplorer`. See `README.md` for the commands.
+`HKCU\Software\EverythingSearchExplorer`. See [README.md](../README.md) for the commands.
 
 The DLL lives in `%LOCALAPPDATA%\EverythingSearchExplorer\nse\<version>\`: a DLL
 already mapped by Explorer cannot be overwritten, so each version has its own
@@ -262,7 +262,7 @@ Windows Search can still open, by design.
    inside the NSE, no calls to `Everything64.dll`.
 5. **UIPI**: if Everything runs elevated, a non-elevated process cannot send it
    `WM_COPYDATA`. There is no detection panel any more: Everything must simply
-   run non-elevated, as stated in `README.md`.
+   run non-elevated, as stated in [README.md](../README.md).
 6. **Protocol version**: `QUERY2` exists since Everything 1.4.1. Older versions
    are not supported.
 

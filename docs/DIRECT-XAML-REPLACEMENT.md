@@ -2,7 +2,7 @@
 
 ## Status
 
-Official implementation in `mod/everything-search-explorer.wh.cpp` (Windhawk ID
+Implementation in `mod/everything-search-explorer.wh.cpp` (Windhawk ID
 `local@everything-search-explorer`). Direct replacement of Explorer's native
 search control, with no Win32 overlay and no `DesktopWindowXamlSource`.
 Verified on `/separate` windows, `Ctrl+N` and windows opened from the taskbar:
@@ -40,10 +40,10 @@ Verified on `/separate` windows, `Ctrl+N` and windows opened from the taskbar:
 
 ## Current flag state
 
-- `kObserverOnly = true` — do not enable the old overlay.
-- `kReplaceNative = true` — remove the native control after insertion.
-- `kAutoRollback = false` — persistent replacement.
-- `kCallbackProbeOnly = true` — read-only probe.
+- `kObserverOnly = true` - do not enable the old overlay.
+- `kReplaceNative = true` - remove the native control after insertion.
+- `kAutoRollback = false` - persistent replacement.
+- `kCallbackProbeOnly = true` - read-only probe.
 
 ## Replacement latency
 

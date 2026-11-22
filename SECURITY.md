@@ -20,4 +20,4 @@ component.
 
 This project is not affiliated with voidtools and receives no support from it.
 
-[Italiano](README.it.md)
+[README in italiano](README.it.md)
