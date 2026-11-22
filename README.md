@@ -70,7 +70,8 @@ such as "This PC" have no filesystem path, so the search is global there.
 
 The **Search options** menu can switch between **All subfolders** (recursive,
 `path:`) and **Current folder** (direct children only, `parent:`). The latter is
-still experimental.
+still experimental. Everything 1.5 is required for the search functions used by
+these options.
 
 The mod keeps separate state per tab: box text, caret and results of one tab are
 not adopted by another.
@@ -82,7 +83,7 @@ the next query; they do not appear in the text box.
 
 | Entry | Effect |
 |---|---|
-| All subfolders | `path:"folder"` (recursive) |
+| All subfolders | `path:"folder\"` (recursive) |
 | Current folder | `parent:"folder"` (direct children only) |
 | Date modified | `date-modified:today` / `7days` / `30days` |
 | Type | `doc:` / `image:` / `video:` / `audio:` |
@@ -99,7 +100,7 @@ stays disabled in virtual folders such as "This PC".
 Requirements:
 
 - Windows 11 x64, PowerShell 7+, Visual Studio Build Tools 2022, CMake,
-  Windhawk, Everything 1.4.1+ running non-elevated.
+  Windhawk, Everything 1.5+ running non-elevated.
 - Explorer with separate processes:
 
   ```powershell

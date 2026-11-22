@@ -72,7 +72,8 @@ lì la ricerca è globale.
 
 Il menu **Opzioni di ricerca** permette di passare da **Tutte le sottocartelle**
 (ricorsivo, `path:`) a **Cartella corrente** (solo figli diretti, `parent:`).
-Quest'ultima è ancora sperimentale.
+Quest'ultima è ancora sperimentale. Le funzioni di ricerca usate da queste
+opzioni richiedono Everything 1.5.
 
 La mod mantiene uno stato separato per scheda: testo della casella, caret e
 risultati di una scheda non vengono adottati da un'altra.
@@ -84,7 +85,7 @@ applicate alla query successiva; non compaiono nella casella di testo.
 
 | Voce | Effetto |
 |---|---|
-| Tutte le sottocartelle | `path:"cartella"` (ricorsivo) |
+| Tutte le sottocartelle | `path:"cartella\"` (ricorsivo) |
 | Cartella corrente | `parent:"cartella"` (solo figli diretti) |
 | Data ultima modifica | `date-modified:today` / `7days` / `30days` |
 | Tipologia | `doc:` / `image:` / `video:` / `audio:` |
@@ -101,7 +102,7 @@ limitare la ricerca: dalle cartelle virtuali come "Questo PC" resta disabilitata
 Requisiti:
 
 - Windows 11 x64, PowerShell 7+, Visual Studio Build Tools 2022, CMake,
-  Windhawk, Everything 1.4.1+ in esecuzione senza elevazione.
+  Windhawk, Everything 1.5+ in esecuzione senza elevazione.
 - Explorer a processi separati:
 
   ```powershell

@@ -84,7 +84,7 @@ content=0
 - `seq`: only for change detection; the NSE also compares `query`, `folder`, `max`,
   `flags`, `filter` and `content`.
 - `flags`: bit 0 = scoped to the folder, bit 1 = include folders,
-  bit 2 = include subfolders (`path:"..."` instead of `parent:"..."`).
+  bit 2 = include subfolders (`path:"...\"` instead of `parent:"..."`).
 - `max=0` means no explicit limit (up to the safety ceiling).
 - Atomic write: temporary file + `MoveFileEx(MOVEFILE_REPLACE_EXISTING)`.
 

@@ -111,6 +111,31 @@ changing code.
 
 ---
 
+## ES-07 - Inclusion toggles (system / ZIP / content) unfinished - OPEN
+
+**Symptom.** The three checkmarked options in *Search options* do not yet behave
+as intended. With a query such as `.zip`, results were empty when a previous
+`filter=doc:` was still active (AND narrowing), and terms added as bare OR
+(`zip:` / `attributes:s`) returned every ZIP or system file regardless of the
+query.
+
+**State.** Work in progress. An `include=` field was added to the request
+protocol and `BuildSearchStringInternal()` was changed several times (AND, OR,
+`!` exclusions, `< >` grouping) without end-to-end verification. None of these
+variants is confirmed correct.
+
+**Intended behaviour.** Toggles widen the search: with every option active the
+user expects files whose name matches the query, plus system files, plus ZIPs,
+plus files whose content matches the query (content search only if Everything
+1.5+ supports it). With all options off, only normal matches should appear.
+
+**Next step.** Verify the exact query string sent to Everything for each
+toggle combination with `tools/diagnose.ps1` and a real results view, then settle
+on one query construction and remove the unused variants. Do not treat the
+current `include=` logic as finished.
+
+---
+
 ## Resolved (kept for context)
 
 - Cross-window / cross-tab result bleed: request files are keyed by the active
