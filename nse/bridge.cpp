@@ -142,13 +142,13 @@ bool ParseReply(const BYTE* base, DWORD size, DWORD requestFlags, DWORD flags, J
 
     esx::ipc::List2 list{};
     std::memcpy(&list, base, sizeof(list));
-    if (list.request_flags & ~requestFlags) return false;  // layout we did not ask for
+    if (list.request_flags != requestFlags) return false;  // payload layout we did not ask for
 
+    // A valid reply fits numitems complete entries before the payload.
     const DWORD available = (size - sizeof(esx::ipc::List2)) / sizeof(esx::ipc::Item2);
-    const DWORD count = list.numitems < available ? list.numitems : available;
+    if (list.numitems > available || list.numitems > list.totitems) return false;
 
-    // Advance by the items we actually parsed: if the reply was truncated,
-    // using numitems would skip the items we never received.
+    const DWORD count = list.numitems;
     job.rawCount = count;
     job.totalCount = list.totitems;
 
