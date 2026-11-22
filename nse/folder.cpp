@@ -376,8 +376,12 @@ bool CFolder::LoadMore() {
 
     if (!bridge::EnsureReady()) {
         std::lock_guard<std::mutex> lock(m_mutex);
-        m_failed = true;
-        m_queryComplete = true;
+        // A newer query may have replaced this one while IPC was in flight:
+        // do not mark that new query as failed because of the old attempt.
+        if (generation == m_generation.load(std::memory_order_relaxed)) {
+            m_failed = true;
+            m_queryComplete = true;
+        }
         return false;
     }
 
@@ -387,8 +391,13 @@ bool CFolder::LoadMore() {
     std::string error;
     if (!bridge::QueryPage(search, offset, flags, wanted, page, raw, total, error)) {
         std::lock_guard<std::mutex> lock(m_mutex);
-        m_failed = true;
-        m_queryComplete = true;
+        // Same as the success path: only the query that started this page may
+        // record its failure. A generation mismatch means a newer query has
+        // already reset the state and owns m_failed/m_queryComplete now.
+        if (generation == m_generation.load(std::memory_order_relaxed)) {
+            m_failed = true;
+            m_queryComplete = true;
+        }
         ::OutputDebugStringA(("[esx] " + error + "\n").c_str());
         return false;
     }
