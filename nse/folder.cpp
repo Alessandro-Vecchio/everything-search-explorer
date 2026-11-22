@@ -376,8 +376,7 @@ bool CFolder::LoadMore() {
 
     if (!bridge::EnsureReady()) {
         std::lock_guard<std::mutex> lock(m_mutex);
-        // A newer query may have replaced this one while IPC was in flight:
-        // do not mark that new query as failed because of the old attempt.
+        // A replaced query must not fail this one.
         if (generation == m_generation.load(std::memory_order_relaxed)) {
             m_failed = true;
             m_queryComplete = true;
@@ -391,9 +390,7 @@ bool CFolder::LoadMore() {
     std::string error;
     if (!bridge::QueryPage(search, offset, flags, wanted, page, raw, total, error)) {
         std::lock_guard<std::mutex> lock(m_mutex);
-        // Same as the success path: only the query that started this page may
-        // record its failure. A generation mismatch means a newer query has
-        // already reset the state and owns m_failed/m_queryComplete now.
+        // A replaced query must not fail this one.
         if (generation == m_generation.load(std::memory_order_relaxed)) {
             m_failed = true;
             m_queryComplete = true;
@@ -780,14 +777,7 @@ HRESULT STDMETHODCALLTYPE CFolder::GetUIObjectOf(HWND, UINT cidl,
     // Items are real filesystem entries, so every heavy lifting operation is
     // delegated to the shell. No custom verbs, no custom drag source.
     std::vector<PIDLIST_ABSOLUTE> absolute(cidl, nullptr);
-    std::vector<std::wstring> paths(cidl);
-    for (UINT i = 0; i < cidl; ++i) {
-        if (!GetPidlPath(apidl[i], paths[i])) return E_INVALIDARG;
-        if (FAILED(::SHParseDisplayName(paths[i].c_str(), nullptr, &absolute[i], 0, nullptr))) {
-            return E_FAIL;
-        }
-    }
-
+    // Placed before the loop so early returns still free parsed PIDLs.
     struct Cleanup {
         std::vector<PIDLIST_ABSOLUTE>& list;
         ~Cleanup() {
@@ -796,6 +786,14 @@ HRESULT STDMETHODCALLTYPE CFolder::GetUIObjectOf(HWND, UINT cidl,
             }
         }
     } cleanup{absolute};
+
+    std::vector<std::wstring> paths(cidl);
+    for (UINT i = 0; i < cidl; ++i) {
+        if (!GetPidlPath(apidl[i], paths[i])) return E_INVALIDARG;
+        if (FAILED(::SHParseDisplayName(paths[i].c_str(), nullptr, &absolute[i], 0, nullptr))) {
+            return E_FAIL;
+        }
+    }
 
     if (IsEqualIID(riid, IID_IContextMenu) || IsEqualIID(riid, IID_IContextMenu2) ||
         IsEqualIID(riid, IID_IContextMenu3)) {
