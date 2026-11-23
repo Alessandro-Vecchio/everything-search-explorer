@@ -34,6 +34,7 @@ set "OUT=%~dp0..\dist\windhawk"
 set "BUILDOBJ=%~dp0..\build\windhawk"
 if not exist "%OUT%" mkdir "%OUT%"
 if not exist "%BUILDOBJ%" mkdir "%BUILDOBJ%"
+REM COM entry points are resolved at runtime, never linked against.
 cl /nologo /std:c++20 /EHsc /LD /utf-8 /O2 /DUNICODE /D_UNICODE /DWH_MOD ^
    /DWH_MOD_ID=L\"local@everything-search-explorer\" /DWH_MOD_VERSION=L\"0.5.0\" ^
    /I"%~dp0generated" ^
@@ -44,7 +45,7 @@ cl /nologo /std:c++20 /EHsc /LD /utf-8 /O2 /DUNICODE /D_UNICODE /DWH_MOD ^
    /EXPORT:_Z10Wh_ModInitv=Wh_ModInit /EXPORT:_Z12Wh_ModUninitv=Wh_ModUninit ^
    /EXPORT:_Z21Wh_ModSettingsChangedv=Wh_ModSettingsChanged ^
    /EXPORT:InternalWhModPtr,DATA ^
-   /EXPORT:DllGetClassObject /EXPORT:DllCanUnloadNow ^
+   /EXPORT:DllGetClassObject,PRIVATE /EXPORT:DllCanUnloadNow,PRIVATE ^
    "%WHLIB%" ^
    ole32.lib runtimeobject.lib oleaut32.lib CoreMessaging.lib UIAutomationCore.lib shell32.lib shlwapi.lib comctl32.lib version.lib user32.lib advapi32.lib
 exit /b %errorlevel%

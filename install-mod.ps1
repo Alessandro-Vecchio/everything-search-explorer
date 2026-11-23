@@ -99,14 +99,6 @@ if ($dllName -match "^$([regex]::Escape($modId))_(?<version>\d+(?:\.\d+)+)_\d+\.
     throw "Unexpected mod DLL name: $dllName"
 }
 
-# Warn when the mod and the shell extension were built against different
-# versions: they are distributed and installed separately.
-$componentVersion = (Select-String -Path (Join-Path $repoRoot 'nse\version.h') `
-    -Pattern 'ESX_VERSION_STRING\s+"([^"]+)"').Matches[0].Groups[1].Value
-if ($componentVersion -ne $modVersion) {
-    Write-Warning "Mod version $modVersion does not match nse\version.h ($componentVersion)."
-}
-
 # --- install the DLL ---------------------------------------------------------
 New-Item -ItemType Directory -Path $engineMods -Force | Out-Null
 $target = Join-Path $engineMods $dllName
