@@ -18,6 +18,7 @@
 #include <atomic>
 #include <cstdint>
 #include <mutex>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -185,7 +186,14 @@ public:
     bool GetPathAt(size_t index, std::wstring& path) const;
     bool EnsureLoaded(size_t index);
     bool IsIncluded(size_t index, DWORD flags) const;
-    std::uint64_t Generation() const { return m_generation.load(); }
+    struct SharedRequestState {
+        std::atomic<std::uint64_t> generation{0};
+        std::atomic<std::uint32_t> seq{UINT32_MAX};
+    };
+    std::uint64_t Generation() const {
+        return m_sharedRequestState ? m_sharedRequestState->generation.load()
+                                    : m_generation.load();
+    }
     // Top-level Explorer frame that owns this view. This is the same key the
     // mod uses for its per-window request snapshot.
     HWND OwnerFrame() const {
@@ -227,9 +235,17 @@ private:
     LONG m_ref = 1;
     PIDLIST_ABSOLUTE m_rootPidl = nullptr;
 
+    // Unique per folder instance so a stale cancel from a destroyed folder
+    // cannot abort a new folder allocated at the same address.
+    inline static std::atomic<std::uint64_t> s_nextCancelToken{1};
+    const std::uint64_t m_cancelToken =
+        s_nextCancelToken.fetch_add(1, std::memory_order_relaxed);
+
     mutable std::mutex m_mutex;
     std::mutex m_fetchMutex;       // serializes page IPC without holding m_mutex
     std::atomic<std::uint64_t> m_generation{0};
+    std::shared_ptr<SharedRequestState> m_sharedRequestState;
+    std::uint64_t m_requestOwner = 0;
     std::vector<Item> m_items;
     std::unordered_map<std::wstring, size_t> m_index;
     bool m_loaded = false;
@@ -246,6 +262,7 @@ private:
     std::wstring m_folder;
     std::wstring m_filter;
     bool m_contentSearch = false;
+    bool m_includeSystemFiles = false;
 
     HWND m_viewHwnd = nullptr;
 };

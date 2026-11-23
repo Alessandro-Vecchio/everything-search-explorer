@@ -5,7 +5,12 @@
 
 #include "bridge.h"
 
+#include <unordered_map>
+
 namespace {
+
+std::mutex g_requestStatesMutex;
+std::unordered_map<std::uintptr_t, std::weak_ptr<CFolder::SharedRequestState>> g_requestStates;
 
 // EXPLORERPANE values from ShlGuid.h (not declared by the MinGW headers).
 // {d9745868-ca5f-4a76-91cd-f5a129fbb076}
@@ -82,6 +87,20 @@ bool IsSamePathIgnoringTrailingSlash(const std::wstring& first, const std::wstri
     while (b > 0 && (second[b - 1] == L'\\' || second[b - 1] == L'/')) --b;
     if (a == 0 || a != b) return false;
     return ::_wcsnicmp(first.c_str(), second.c_str(), a) == 0;
+}
+
+bool HasIncludeToken(const std::wstring& filter, const wchar_t* token) {
+    std::size_t pos = 0;
+    while (pos < filter.size()) {
+        while (pos < filter.size() && filter[pos] == L' ') ++pos;
+        const std::size_t start = pos;
+        while (pos < filter.size() && filter[pos] != L' ') ++pos;
+        if (pos > start &&
+            _wcsicmp(filter.substr(start, pos - start).c_str(), token) == 0) {
+            return true;
+        }
+    }
+    return false;
 }
 
 std::wstring ParentDirectoryOf(const std::wstring& path) {
@@ -240,6 +259,7 @@ HRESULT CFolder::Create(REFIID riid, void** ppv) {
 }
 
 CFolder::~CFolder() {
+    bridge::CancelQuery(m_cancelToken);
     ClearItems();
     if (m_rootPidl) ::CoTaskMemFree(m_rootPidl);
     ::InterlockedDecrement(&g_cRefDll);
@@ -381,6 +401,9 @@ bool CFolder::LoadMore() {
     DWORD flags = 0;
     DWORD wanted = 0;
     std::uint64_t generation = 0;
+    std::uint64_t requestOwner = 0;
+    std::uint32_t requestSeq = 0;
+    bool includeSystemFiles = false;
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         if (m_queryComplete || m_failed) return false;
@@ -393,15 +416,21 @@ bool CFolder::LoadMore() {
         search = m_search;
         offset = m_nextOffset;
         flags = m_flags;
+        includeSystemFiles = m_includeSystemFiles;
+        requestOwner = m_requestOwner;
+        requestSeq = m_seq;
         wanted = std::min<DWORD>(bridge::kBatchSize,
                                  static_cast<DWORD>(m_limit - m_items.size()));
-        generation = m_generation.load(std::memory_order_relaxed);
+        generation = Generation();
     }
 
     if (!bridge::EnsureReady()) {
         std::lock_guard<std::mutex> lock(m_mutex);
-        m_failed = true;
-        m_queryComplete = true;
+        // A replaced query must not fail this one.
+        if (generation == Generation()) {
+            m_failed = true;
+            m_queryComplete = true;
+        }
         return false;
     }
 
@@ -409,17 +438,21 @@ bool CFolder::LoadMore() {
     DWORD raw = 0;
     DWORD total = 0;
     std::string error;
-    if (!bridge::QueryPage(search, offset, flags, wanted, page, raw, total, error)) {
+    if (!bridge::QueryPage(search, offset, flags, wanted, page, raw, total, error,
+                           m_cancelToken, includeSystemFiles, requestOwner, requestSeq)) {
         std::lock_guard<std::mutex> lock(m_mutex);
-        m_failed = true;
-        m_queryComplete = true;
+        // A replaced query must not fail this one.
+        if (generation == Generation()) {
+            m_failed = true;
+            m_queryComplete = true;
+        }
         ::OutputDebugStringA(("[esx] " + error + "\n").c_str());
         return false;
     }
 
     {
         std::lock_guard<std::mutex> lock(m_mutex);
-        if (generation != m_generation.load(std::memory_order_relaxed)) {
+        if (generation != Generation()) {
             return false;  // a new query replaced this page
         }
         AppendPageLocked(page);
@@ -437,8 +470,25 @@ void CFolder::LoadItemsLocked(HWND frameHint) {
     // EnumObjects runs on a different CFolder than the one that received the
     // view callbacks, so prefer the hint captured from its hwnd parameter.
     const HWND frame = frameHint ? frameHint : OwnerFrame();
+    const auto requestOwner = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(frame));
+    if (!m_sharedRequestState) {
+        std::lock_guard<std::mutex> lock(g_requestStatesMutex);
+        auto& weak = g_requestStates[reinterpret_cast<std::uintptr_t>(frame)];
+        m_sharedRequestState = weak.lock();
+        if (!m_sharedRequestState) {
+            m_sharedRequestState = std::make_shared<SharedRequestState>();
+            weak = m_sharedRequestState;
+        }
+    }
+    m_requestOwner = requestOwner;
     esx::QueryRequest request;
     if (!esx::ReadRequestForWindow(frame, request)) {
+        if (m_sharedRequestState->seq.exchange(UINT32_MAX) != UINT32_MAX) {
+            m_sharedRequestState->generation.fetch_add(1);
+        }
+        bridge::CancelSupersededQuery(requestOwner, UINT32_MAX);
+        bridge::CancelQuery(m_cancelToken);
+        m_generation.fetch_add(1, std::memory_order_relaxed);
         ClearItems();
         m_loaded = false;
         m_failed = false;
@@ -447,13 +497,21 @@ void CFolder::LoadItemsLocked(HWND frameHint) {
         m_folder.clear();
         m_filter.clear();
         m_contentSearch = false;
+        m_includeSystemFiles = false;
         return;
+    }
+    const std::uint32_t previousSeq = m_sharedRequestState->seq.exchange(request.seq);
+    if (previousSeq != request.seq) {
+        m_sharedRequestState->generation.fetch_add(1);
+        bridge::CancelSupersededQuery(requestOwner, request.seq);
     }
     ESX_TRACE_LOG("LoadItems frame=%p seq=%u query='%ls'", static_cast<void*>(frame),
                   request.seq, request.query.c_str());
+    const bool includeSystemFiles = HasIncludeToken(request.includeFilter, L"attributes:s");
 
     // When the query is empty, show an empty list immediately without sending a wildcard search to Everything.
     if (request.query.empty()) {
+        bridge::CancelQuery(m_cancelToken);
         ClearItems();
         m_generation.fetch_add(1, std::memory_order_relaxed);
         m_loaded = true;
@@ -463,6 +521,7 @@ void CFolder::LoadItemsLocked(HWND frameHint) {
         m_folder.clear();
         m_filter.clear();
         m_contentSearch = false;
+        m_includeSystemFiles = false;
         m_queryComplete = true;
         return;
     }
@@ -472,10 +531,12 @@ void CFolder::LoadItemsLocked(HWND frameHint) {
     if (m_loaded && request.seq == m_seq && request.query == m_query &&
         request.folder == m_folder && request.maxResults == m_maxResults &&
         request.flags == m_flags && request.filter == m_filter &&
-        request.contentSearch == m_contentSearch) {
+        request.contentSearch == m_contentSearch &&
+        includeSystemFiles == m_includeSystemFiles) {
         return;
     }
 
+    bridge::CancelQuery(m_cancelToken);
     ClearItems();
     m_generation.fetch_add(1, std::memory_order_relaxed);
     m_loaded = true;
@@ -485,6 +546,7 @@ void CFolder::LoadItemsLocked(HWND frameHint) {
     m_folder = request.folder;
     m_filter = request.filter;
     m_contentSearch = request.contentSearch;
+    m_includeSystemFiles = includeSystemFiles;
     m_maxResults = request.maxResults;
     m_flags = request.flags;
 
@@ -810,14 +872,6 @@ HRESULT STDMETHODCALLTYPE CFolder::GetUIObjectOf(HWND, UINT cidl,
     // Items are real filesystem entries, so every heavy lifting operation is
     // delegated to the shell. No custom verbs, no custom drag source.
     std::vector<PIDLIST_ABSOLUTE> absolute(cidl, nullptr);
-    std::vector<std::wstring> paths(cidl);
-    for (UINT i = 0; i < cidl; ++i) {
-        if (!GetPidlPath(apidl[i], paths[i])) return E_INVALIDARG;
-        if (FAILED(::SHParseDisplayName(paths[i].c_str(), nullptr, &absolute[i], 0, nullptr))) {
-            return E_FAIL;
-        }
-    }
-
     struct Cleanup {
         std::vector<PIDLIST_ABSOLUTE>& list;
         ~Cleanup() {
@@ -826,6 +880,14 @@ HRESULT STDMETHODCALLTYPE CFolder::GetUIObjectOf(HWND, UINT cidl,
             }
         }
     } cleanup{absolute};
+
+    std::vector<std::wstring> paths(cidl);
+    for (UINT i = 0; i < cidl; ++i) {
+        if (!GetPidlPath(apidl[i], paths[i])) return E_INVALIDARG;
+        if (FAILED(::SHParseDisplayName(paths[i].c_str(), nullptr, &absolute[i], 0, nullptr))) {
+            return E_FAIL;
+        }
+    }
 
     if (IsEqualIID(riid, IID_IContextMenu) || IsEqualIID(riid, IID_IContextMenu2) ||
         IsEqualIID(riid, IID_IContextMenu3)) {
@@ -1255,6 +1317,8 @@ ULONG STDMETHODCALLTYPE CEnumIDList::Release() {
 HRESULT STDMETHODCALLTYPE CEnumIDList::Next(ULONG celt, PITEMID_CHILD* rgelt,
                                             ULONG* pceltFetched) {
     if (!rgelt) return E_POINTER;
+    // A null count is only valid when one item is requested.
+    if (celt > 1 && !pceltFetched) return E_POINTER;
     if (pceltFetched) *pceltFetched = 0;
     if (m_folder->Generation() != m_generation) return S_FALSE;
 

@@ -17,6 +17,7 @@ namespace {
 // Posted to our own worker window to start a query or to abandon one.
 constexpr UINT kQueryMessage = WM_APP + 0x51;
 constexpr UINT kCancelMessage = WM_APP + 0x52;
+constexpr UINT kSupersedeMessage = WM_APP + 0x53;
 constexpr wchar_t kIpcWindowClass[] = L"EverythingSearchIpcWnd";
 
 // Replies carry this value in COPYDATASTRUCT::dwData, so a late reply from an
@@ -41,10 +42,13 @@ enum class Error {
 struct Job {
     DWORD replyId = 0;
     std::uint64_t owner = 0;
+    std::uint64_t requestOwner = 0;
+    std::uint32_t requestSeq = 0;
     std::wstring search;
     DWORD offset = 0;
     DWORD maxResults = 0;
     DWORD flags = 0;
+    bool includeSystemFiles = true;
     Error error = Error::None;
     DWORD rawCount = 0;
     DWORD totalCount = 0;
@@ -105,9 +109,16 @@ std::vector<std::wstring> SplitTerms(const std::wstring& value) {
     return terms;
 }
 
+bool HasTerm(const std::wstring& value, const wchar_t* term) {
+    for (const auto& item : SplitTerms(value)) {
+        if (_wcsicmp(item.c_str(), term) == 0) return true;
+    }
+    return false;
+}
+
 // Everything requires matches to stay inside the folder when scoped. The
-// search functions used here (parent:, attributes:, date-modified:, size:)
-// and < > grouping need Everything 1.5.
+// search functions used here (parent:, date-modified:, size:) and < > grouping
+// need Everything 1.5.
 std::wstring BuildSearchStringInternal(const esx::QueryRequest& req) {
     // scope is shared by every alternative so a toggle never widens the
     // search outside the current folder. text adds the plain filename query.
@@ -139,35 +150,17 @@ std::wstring BuildSearchStringInternal(const esx::QueryRequest& req) {
     std::wstring text = scope;
     append(text, req.query);
 
-    // Everything hides system, compressed and content matches by default.
-    // A toggle includes that category; without it the category is excluded.
-    const auto includes = SplitTerms(req.includeFilter);
-    auto isIncluded = [&](const std::wstring& token) {
-        for (const auto& item : includes) {
-            if (_wcsicmp(item.c_str(), token.c_str()) == 0) return true;
-        }
-        return false;
-    };
-    const bool withSystem = isIncluded(L"attributes:s");
-    const bool withZip = isIncluded(L"zip:");
+    // Everything indexes size and date-modified but not attributes by default.
+    // attributes: falls back to a per-file lookup (seconds on a large index),
+    // so system files are filtered from the reply instead (see ParseReply).
+    // zip: is an indexed filter macro, so it stays in the query.
+    if (!HasTerm(req.includeFilter, L"zip:")) append(text, L"!zip:");
 
-    auto withExclusions = [&](std::wstring value) {
-        if (!withSystem) append(value, L"!attributes:s");
-        if (!withZip) append(value, L"!zip:");
-        return value;
-    };
-
-    std::wstring base = withExclusions(text);
+    std::wstring base = text;
     if (base.empty() && !(req.contentSearch && !req.query.empty())) return {};
 
-    // Each opted-in category is an alternative that still matches the query.
     std::vector<std::wstring> alternatives;
     if (!base.empty()) alternatives.push_back(L"<" + base + L">");
-    for (const auto& token : includes) {
-        if (!token.empty() && !text.empty()) {
-            alternatives.push_back(L"<" + text + L" " + token + L">");
-        }
-    }
     if (req.contentSearch && !req.query.empty()) {
         // Keep scope and filters: a content search must not escape into a
         // global search. Drop the plain filename term and group the query so
@@ -177,7 +170,9 @@ std::wstring BuildSearchStringInternal(const esx::QueryRequest& req) {
             contentQuery.back() != L'>') {
             contentQuery = L"<" + contentQuery + L">";
         }
-        std::wstring contentBase = withExclusions(scope);
+        std::wstring contentBase = scope;
+        append(contentBase, req.filter);
+        if (!HasTerm(req.includeFilter, L"zip:")) append(contentBase, L"!zip:");
         append(contentBase, L"content:" + contentQuery);
         alternatives.push_back(L"<" + contentBase + L">");
     }
@@ -271,6 +266,10 @@ bool ParseReply(const BYTE* base, DWORD size, DWORD requestFlags, DWORD flags, J
             ok = ReadPod(base, size, pos, attributes);
         }
         if (!ok) continue;
+
+        // Everything does not index attributes by default, so the exclusion is
+        // applied here on the attribute it already returned with the item.
+        if (!job.includeSystemFiles && (attributes & FILE_ATTRIBUTE_SYSTEM) != 0) continue;
 
         esx::QueryResultItem result;
         // QUERY2 returns NAME and PATH separately, where PATH is the containing
@@ -407,8 +406,27 @@ LRESULT CALLBACK IpcWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         ::ReleaseSRWLockExclusive(&g_lock);
         if (victim) {
             victim->error = Error::Cancelled;
-            FinishJob(victim);
             SendCancelToEverything();
+            FinishJob(victim);
+        }
+        return 0;
+    }
+
+    if (msg == kSupersedeMessage) {
+        const auto requestOwner = static_cast<std::uint64_t>(wParam);
+        const auto requestSeq = static_cast<std::uint32_t>(lParam);
+        Job* victim = nullptr;
+        ::AcquireSRWLockExclusive(&g_lock);
+        if (g_pending && g_pending->requestOwner == requestOwner &&
+            g_pending->requestSeq != requestSeq) {
+            victim = g_pending;
+            g_pending = nullptr;
+        }
+        ::ReleaseSRWLockExclusive(&g_lock);
+        if (victim) {
+            victim->error = Error::Cancelled;
+            SendCancelToEverything();
+            FinishJob(victim);
         }
         return 0;
     }
@@ -483,7 +501,8 @@ bool EnsureWorker() {
 
 bool RunOnePage(const std::wstring& search, DWORD offset, DWORD flags, DWORD maxResults,
                 std::vector<esx::QueryResultItem>& out, DWORD& rawCount, DWORD& totalCount,
-                std::string& error, std::uint64_t owner) {
+                std::string& error, std::uint64_t owner, bool includeSystemFiles,
+                std::uint64_t requestOwner = 0, std::uint32_t requestSeq = 0) {
     std::lock_guard<std::mutex> queryLock(g_queryMutex);
     auto* job = new (std::nothrow) Job();
     if (!job) {
@@ -501,10 +520,13 @@ bool RunOnePage(const std::wstring& search, DWORD offset, DWORD flags, DWORD max
     job->replyId =
         kReplyBase | (static_cast<DWORD>(::InterlockedIncrement(&g_nextJobId)) & 0x000FFFFF);
     job->owner = owner;
+    job->requestOwner = requestOwner;
+    job->requestSeq = requestSeq;
     job->search = search;
     job->offset = offset;
     job->maxResults = maxResults;
     job->flags = flags;
+    job->includeSystemFiles = includeSystemFiles;
     ::InterlockedIncrement(&job->refs);  // the worker owns this reference
 
     if (!::PostMessageW(g_wnd, kQueryMessage, 0, reinterpret_cast<LPARAM>(job))) {
@@ -543,14 +565,16 @@ std::wstring BuildSearchString(const esx::QueryRequest& req) {
 
 bool QueryPage(const std::wstring& search, DWORD offset, DWORD flags, DWORD wanted,
                std::vector<esx::QueryResultItem>& out, DWORD& rawCount,
-               DWORD& totalCount, std::string& error, std::uint64_t owner) {
+               DWORD& totalCount, std::string& error, std::uint64_t owner,
+               bool includeSystemFiles, std::uint64_t requestOwner,
+               std::uint32_t requestSeq) {
     if (!EnsureReady()) {
         error = DescribeError(Error::NotRunning);
         return false;
     }
     const ULONGLONG started = ::GetTickCount64();
-    const bool ok =
-        RunOnePage(search, offset, flags, wanted, out, rawCount, totalCount, error, owner);
+    const bool ok = RunOnePage(search, offset, flags, wanted, out, rawCount, totalCount, error,
+                               owner, includeSystemFiles, requestOwner, requestSeq);
     ESX_TRACE_LOG("TIMING QueryPage offset=%u raw=%u total=%u ms=%llu", offset, rawCount,
                   totalCount, ::GetTickCount64() - started);
     return ok;
@@ -573,6 +597,7 @@ bool Query(const esx::QueryRequest& req, std::vector<esx::QueryResultItem>& out,
     ESX_TRACE_LOG("TIMING Query init=%llu ms", tReady - tStart);
 
     const std::wstring search = BuildSearchStringInternal(req);
+    const bool includeSystemFiles = HasTerm(req.includeFilter, L"attributes:s");
     // 0 = no user limit; kSafetyCeiling only keeps a runaway query (e.g. "*"
     // on C:\) from filling all RAM. Anything below it is returned in full.
     const DWORD limit = req.maxResults && req.maxResults < kSafetyCeiling
@@ -590,7 +615,8 @@ bool Query(const esx::QueryRequest& req, std::vector<esx::QueryResultItem>& out,
         DWORD raw = 0;
         DWORD total = 0;
         const ULONGLONG tPage = ::GetTickCount64();
-        if (!RunOnePage(search, offset, req.flags, wanted, page, raw, total, error, 0)) {
+        if (!RunOnePage(search, offset, req.flags, wanted, page, raw, total, error, 0,
+                        includeSystemFiles)) {
             return false;
         }
         ESX_TRACE_LOG("TIMING Query page=%u raw=%u total=%u ms=%llu", batch, raw, total,
@@ -635,6 +661,15 @@ void CancelQuery(std::uint64_t owner) {
     HWND wnd = g_wnd;
     ::ReleaseSRWLockShared(&g_initLock);
     if (wnd) ::PostMessageW(wnd, kCancelMessage, 0, static_cast<LPARAM>(owner));
+}
+
+void CancelSupersededQuery(std::uint64_t requestOwner, std::uint32_t requestSeq) {
+    if (!requestOwner) return;
+    ::AcquireSRWLockShared(&g_initLock);
+    HWND wnd = g_wnd;
+    ::ReleaseSRWLockShared(&g_initLock);
+    if (wnd) ::PostMessageW(wnd, kSupersedeMessage, static_cast<WPARAM>(requestOwner),
+                            static_cast<LPARAM>(requestSeq));
 }
 
 }  // namespace bridge

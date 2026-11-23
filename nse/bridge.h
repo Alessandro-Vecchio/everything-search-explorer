@@ -22,14 +22,22 @@ std::wstring BuildSearchString(const esx::QueryRequest& req);
 
 // Fetches one page. `offset` is the raw index in Everything's result list,
 // `total` reports how many matches Everything found in total.
+// includeSystemFiles controls the local FILE_ATTRIBUTE_SYSTEM filter: Everything
+// does not index attributes by default, so excluding them in the query is slow.
 bool QueryPage(const std::wstring& search, DWORD offset, DWORD flags, DWORD wanted,
                std::vector<esx::QueryResultItem>& out, DWORD& rawCount,
-               DWORD& totalCount, std::string& error, std::uint64_t owner = 0);
+               DWORD& totalCount, std::string& error, std::uint64_t owner = 0,
+               bool includeSystemFiles = true, std::uint64_t requestOwner = 0,
+               std::uint32_t requestSeq = 0);
 
 // Aborts the query issued by `owner` and cancels it in Everything. Safe to
 // call after the owner is gone; the token is matched against the in-flight
 // job on the IPC thread.
 void CancelQuery(std::uint64_t owner);
+
+// Cancels an in-flight page request for the same Explorer tab when its
+// request sequence has been superseded.
+void CancelSupersededQuery(std::uint64_t requestOwner, std::uint32_t requestSeq);
 
 // Runs one query against Everything, out of band.
 //
