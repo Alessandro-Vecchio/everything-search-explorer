@@ -138,6 +138,16 @@ current `include=` logic as finished.
 
 ## Resolved (kept for context)
 
+- Origin folder loss on repeated search (ES-01, PR #1): per-tab origin tracking
+  (`SaveTabOrigin` / `LoadTabOrigin`), `lastFolder` sync, and in-place
+  `IShellView::Refresh()` on searches submitted from the results view.
+- Static window and tab title (ES-04, PR #1): dynamic CLSID display name
+  registry update (`UpdateNseDisplayName`) using `@shell32.dll,-34132` and
+  dynamic title formatting in `DisplayNameLocked()`.
+- Native Shell MUI localization: replaced hardcoded Italian/English UI text
+  with `@shell32.dll`, `@propsys.dll` and `@ExplorerFrame.dll` string resources
+  for the search placeholder, result columns, command bar detection, and the
+  entire search options flyout.
 - Cross-window / cross-tab result bleed: request files are keyed by the active
   `ShellTabWindowClass` HWND (`request-<HWND>.txt`); a global `request.txt` is
   kept as fallback.

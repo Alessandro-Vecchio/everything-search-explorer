@@ -272,6 +272,17 @@ static void UpdateNseDisplayName(const std::wstring& folderScope) {
     }
 }
 
+static std::wstring GetSearchOptionsLabel() {
+    std::wstring opts = LoadMuiString(L"@shell32.dll,-37459", L"Search options");
+    if (opts == L"Opzioni") return L"Opzioni di ricerca";
+    if (opts == L"Options") {
+        std::wstring thisPc = GetSystemThisPcName();
+        if (thisPc == L"Ce PC") return L"Options de recherche";
+        return L"Search options";
+    }
+    return opts;
+}
+
 // Per-window probe slots, keyed by the native XAML handle. No single global
 // slot is used to create controls for different windows.
 std::mutex g_probeByHandleMutex;
@@ -2960,7 +2971,7 @@ static std::wstring WithFilterToken(const std::wstring& filter, const wchar_t* t
 }
 
 struct MenuEntry {
-    const wchar_t* label;
+    std::wstring label;
     const wchar_t* token;  // nullptr means "any"/clear the group
 };
 
@@ -3015,6 +3026,7 @@ static HRESULT AddSearchCommandBarButtons(IXamlDiagnostics* diagnostics,
 
     // There are two command bars in the window (tab strip and folder commands).
     // Pick the one that contains "Visualizza" so the button lands next to it.
+    const std::wstring viewMui = LoadMuiString(L"@ExplorerFrame.dll,-49933", L"View");
     auto commandBar = bars.back();
     unsigned insertAt = 0;
     for (auto bar : bars) {
@@ -3025,10 +3037,17 @@ static HRESULT AddSearchCommandBarButtons(IXamlDiagnostics* diagnostics,
             if (auto button =
                     candidate.try_as<winrt::Microsoft::UI::Xaml::Controls::AppBarButton>()) {
                 const std::wstring label(button.Label().c_str());
-                if (label.find(L"Visualizza") != std::wstring::npos ||
+                if ((!viewMui.empty() && label.find(viewMui) != std::wstring::npos) ||
+                    label.find(L"Visualizza") != std::wstring::npos ||
                     label.find(L"View") != std::wstring::npos ||
+                    label.find(L"Affichage") != std::wstring::npos ||
+                    label.find(L"Ansicht") != std::wstring::npos ||
+                    label.find(L"Ver") != std::wstring::npos ||
                     label.find(L"Ordina") != std::wstring::npos ||
-                    label.find(L"Sort") != std::wstring::npos) {
+                    label.find(L"Sort") != std::wstring::npos ||
+                    label.find(L"Trier") != std::wstring::npos ||
+                    label.find(L"Sortieren") != std::wstring::npos ||
+                    label.find(L"Ordenar") != std::wstring::npos) {
                     commandBar = bar;
                     insertAt = i + 1;
                     break;
@@ -3063,7 +3082,7 @@ static HRESULT AddSearchCommandBarButtons(IXamlDiagnostics* diagnostics,
     if (request.folder.empty()) request.folder = originFallback;
 
     auto options = winrt::Microsoft::UI::Xaml::Controls::AppBarButton();
-    options.Label(L"Opzioni di ricerca");
+    options.Label(winrt::hstring(GetSearchOptionsLabel()));
     auto flyout = winrt::Microsoft::UI::Xaml::Controls::MenuFlyout();
     flyout.Placement(
         winrt::Microsoft::UI::Xaml::Controls::Primitives::FlyoutPlacementMode::Bottom);
@@ -3083,7 +3102,7 @@ static HRESULT AddSearchCommandBarButtons(IXamlDiagnostics* diagnostics,
     const DWORD scopeFlag = static_cast<DWORD>(esx::ScopeToFolder);
     const DWORD recursiveFlag = static_cast<DWORD>(esx::IncludeSubfolders);
     auto allSubfolders = winrt::Microsoft::UI::Xaml::Controls::RadioMenuFlyoutItem();
-    allSubfolders.Text(L"Tutte le sottocartelle");
+    allSubfolders.Text(winrt::hstring(LoadMuiString(L"@shell32.dll,-37539", L"All subfolders")));
     allSubfolders.Icon(glyph(L"\uED41"));  // TreeFolderFolder
     allSubfolders.GroupName(L"EsxScope");
     allSubfolders.IsChecked(!(request.flags & scopeFlag) ||
@@ -3100,7 +3119,7 @@ static HRESULT AddSearchCommandBarButtons(IXamlDiagnostics* diagnostics,
     flyout.Items().Append(allSubfolders);
 
     auto currentFolder = winrt::Microsoft::UI::Xaml::Controls::RadioMenuFlyoutItem();
-    currentFolder.Text(L"Cartella corrente");
+    currentFolder.Text(winrt::hstring(LoadMuiString(L"@shell32.dll,-37541", L"Current folder")));
     currentFolder.Icon(glyph(L"\uE8B7"));
     currentFolder.GroupName(L"EsxScope");
     currentFolder.IsChecked((request.flags & scopeFlag) &&
@@ -3118,10 +3137,10 @@ static HRESULT AddSearchCommandBarButtons(IXamlDiagnostics* diagnostics,
     flyout.Items().Append(currentFolder);
     flyout.Items().Append(winrt::Microsoft::UI::Xaml::Controls::MenuFlyoutSeparator());
 
-    auto addSubmenu = [&](wchar_t const* text, wchar_t const* iconGlyph,
-                          std::initializer_list<MenuEntry> entries) {
+    auto addSubmenu = [&](const std::wstring& text, wchar_t const* iconGlyph,
+                          const std::vector<MenuEntry>& entries) {
         auto sub = winrt::Microsoft::UI::Xaml::Controls::MenuFlyoutSubItem();
-        sub.Text(text);
+        sub.Text(winrt::hstring(text));
         sub.Icon(glyph(iconGlyph));
         std::vector<std::wstring> group;
         for (const auto& entry : entries) {
@@ -3129,8 +3148,8 @@ static HRESULT AddSearchCommandBarButtons(IXamlDiagnostics* diagnostics,
         }
         for (const auto& entry : entries) {
             auto item = winrt::Microsoft::UI::Xaml::Controls::RadioMenuFlyoutItem();
-            item.Text(entry.label);
-            item.GroupName(text);
+            item.Text(winrt::hstring(entry.label));
+            item.GroupName(winrt::hstring(text));
             // "Any" is checked when none of the group tokens is active.
             bool checked = !entry.token;
             if (entry.token) {
@@ -3163,28 +3182,28 @@ static HRESULT AddSearchCommandBarButtons(IXamlDiagnostics* diagnostics,
         }
         flyout.Items().Append(sub);
     };
-    addSubmenu(L"Data ultima modifica", L"\uE787",  // Calendar
-               {{L"Qualsiasi ora", nullptr},
-                {L"Oggi", L"date-modified:today"},
-                {L"Ultimi 7 giorni", L"date-modified:7days"},
-                {L"Ultimo mese", L"date-modified:30days"}});
-    addSubmenu(L"Tipologia", L"\uE8A5",  // Document
-               {{L"Tutte le tipologie", nullptr},
-                {L"Documenti", L"doc:"},
-                {L"Immagini", L"image:"},
-                {L"Video", L"video:"},
-                {L"Audio", L"audio:"}});
-    addSubmenu(L"Dimensioni", L"\uED5E",  // Ruler
-               {{L"Qualsiasi dimensione", nullptr},
-                {L"Vuoto (0 byte)", L"size:0"},
-                {L"Molto piccolo (0 - 10 KB)", L"size:0..10kb"},
-                {L"Piccolo (10 - 100 KB)", L"size:10kb..100kb"}});
+    addSubmenu(LoadMuiString(L"@shell32.dll,-37545", L"Date modified"), L"\uE787",  // Calendar
+               {{LoadMuiString(L"@propsys.dll,-400", L"Any time"), nullptr},
+                {LoadMuiString(L"@propsys.dll,-106", L"Today"), L"date-modified:today"},
+                {LoadMuiString(L"@propsys.dll,-103", L"Last 7 days"), L"date-modified:7days"},
+                {LoadMuiString(L"@propsys.dll,-502", L"Last month"), L"date-modified:30days"}});
+    addSubmenu(LoadMuiString(L"@shell32.dll,-37547", L"Type"), L"\uE8A5",  // Document
+               {{LoadMuiString(L"@propsys.dll,-400", L"All types"), nullptr},
+                {LoadMuiString(L"@shell32.dll,-21770", L"Documents"), L"doc:"},
+                {LoadMuiString(L"@shell32.dll,-21779", L"Pictures"), L"image:"},
+                {LoadMuiString(L"@shell32.dll,-21791", L"Videos"), L"video:"},
+                {LoadMuiString(L"@propsys.dll,-38963", L"Audio"), L"audio:"}});
+    addSubmenu(LoadMuiString(L"@shell32.dll,-37549", L"Size"), L"\uED5E",  // Ruler
+               {{LoadMuiString(L"@propsys.dll,-400", L"Any size"), nullptr},
+                {LoadMuiString(L"@propsys.dll,-38569", L"Empty (0 KB)"), L"size:0"},
+                {LoadMuiString(L"@propsys.dll,-38598", L"Tiny (0 - 10 KB)"), L"size:0..10kb"},
+                {LoadMuiString(L"@propsys.dll,-38599", L"Small (10 - 100 KB)"), L"size:10kb..100kb"}});
     flyout.Items().Append(winrt::Microsoft::UI::Xaml::Controls::MenuFlyoutSeparator());
 
-    auto addToggle = [&](wchar_t const* text, wchar_t const* iconGlyph, const wchar_t* token,
+    auto addToggle = [&](const std::wstring& text, wchar_t const* iconGlyph, const wchar_t* token,
                          bool contentToggle) {
         auto item = winrt::Microsoft::UI::Xaml::Controls::ToggleMenuFlyoutItem();
-        item.Text(text);
+        item.Text(winrt::hstring(text));
         item.Icon(glyph(iconGlyph));
         item.IsChecked(contentToggle ? request.contentSearch
                                      : HasFilterToken(request.includeFilter, token));
@@ -3205,9 +3224,9 @@ static HRESULT AddSearchCommandBarButtons(IXamlDiagnostics* diagnostics,
         });
         flyout.Items().Append(item);
     };
-    addToggle(L"File di sistema", L"\uE8A6", L"attributes:s", false);  // ProtectedDocument
-    addToggle(L"Cartelle compresse (ZIP)", L"\uE7B8", L"zip:", false);  // Package
-    addToggle(L"Contenuto file", L"\uEE1A", nullptr, true);  // FolderSearch
+    addToggle(LoadMuiString(L"@shell32.dll,-37559", L"System files"), L"\uE8A6", L"attributes:s", false);  // ProtectedDocument
+    addToggle(LoadMuiString(L"@shell32.dll,-37561", L"Compressed folders (ZIP)"), L"\uE7B8", L"zip:", false);  // Package
+    addToggle(LoadMuiString(L"@shell32.dll,-37557", L"File contents"), L"\uEE1A", nullptr, true);  // FolderSearch
 
     options.Flyout(flyout);
 
