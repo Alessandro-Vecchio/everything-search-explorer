@@ -138,6 +138,7 @@ struct WindowState {
     HWND frame = nullptr;
     HWND tab = nullptr;  // per-tab identity (ShellTabWindowClass)
     std::wstring queryText;  // last query submitted from this tab
+    std::wstring lastFolder;
     DWORD pid = 0;
     uint64_t generation = 0;
     winrt::com_ptr<VisualTreeWatcher> watcher;
@@ -167,6 +168,7 @@ struct WindowState {
     std::atomic<bool> ignoreNextEmpty{false};
     std::atomic<bool> closingSearch{false};
     winrt::agile_ref<winrt::Microsoft::UI::Dispatching::DispatcherQueue> dispatcher;
+    winrt::Microsoft::UI::Dispatching::DispatcherQueueTimer searchTimer{nullptr};
 
     // Search command-bar button (created together with the replacement box).
     winrt::Microsoft::UI::Xaml::Controls::AppBarButton optionsButton{nullptr};
@@ -196,6 +198,89 @@ std::wstring LoadTabText(HWND tab) {
     std::lock_guard<std::mutex> guard(g_tabTextMutex);
     const auto it = g_tabText.find(tab);
     return it != g_tabText.end() ? it->second : std::wstring();
+}
+
+std::unordered_map<HWND, std::wstring> g_tabOrigin;
+void SaveTabOrigin(HWND tab, const std::wstring& origin) {
+    std::lock_guard<std::mutex> guard(g_tabTextMutex);
+    g_tabOrigin[tab] = origin;
+}
+std::wstring LoadTabOrigin(HWND tab) {
+    std::lock_guard<std::mutex> guard(g_tabTextMutex);
+    const auto it = g_tabOrigin.find(tab);
+    return it != g_tabOrigin.end() ? it->second : std::wstring();
+}
+
+#pragma comment(lib, "advapi32.lib")
+
+static std::wstring LoadMuiString(const wchar_t* resource, const wchar_t* fallback) {
+    wchar_t buffer[512]{};
+    if (SUCCEEDED(::SHLoadIndirectString(resource, buffer, ARRAYSIZE(buffer), nullptr)) && buffer[0]) {
+        return buffer;
+    }
+    return fallback ? fallback : L"";
+}
+
+static std::wstring GetSystemThisPcName() {
+    return LoadMuiString(L"@shell32.dll,-9216", L"This PC");
+}
+
+static std::wstring FormatWithFolder(const std::wstring& templateStr, const std::wstring& folderName) {
+    size_t pos = templateStr.find(L"%s");
+    if (pos != std::wstring::npos) {
+        std::wstring res = templateStr;
+        res.replace(pos, 2, folderName);
+        return res;
+    }
+    pos = templateStr.find(L"%1");
+    if (pos != std::wstring::npos) {
+        std::wstring res = templateStr;
+        res.replace(pos, 2, folderName);
+        return res;
+    }
+    return templateStr + L" " + folderName;
+}
+
+static std::wstring GetFolderNameFromPath(const std::wstring& folderPath) {
+    if (folderPath.empty()) return {};
+    size_t lastSlash = folderPath.find_last_of(L"\\/");
+    if (lastSlash != std::wstring::npos && lastSlash + 1 < folderPath.size()) {
+        return folderPath.substr(lastSlash + 1);
+    }
+    return folderPath;
+}
+
+static std::wstring GetSearchPlaceholderForFolder(const std::wstring& folderPath) {
+    const std::wstring templateStr = LoadMuiString(L"@shell32.dll,-13122", L"Search %s");
+    const std::wstring folderName = folderPath.empty() ? GetSystemThisPcName() : GetFolderNameFromPath(folderPath);
+    return FormatWithFolder(templateStr, folderName.empty() ? GetSystemThisPcName() : folderName);
+}
+
+static void UpdateNseDisplayName(const std::wstring& folderScope) {
+    const std::wstring templateStr = LoadMuiString(L"@shell32.dll,-34132", L"Search results in %s");
+    std::wstring folderName = GetFolderNameFromPath(folderScope);
+    if (folderName.empty()) folderName = GetSystemThisPcName();
+    const std::wstring displayName = FormatWithFolder(templateStr, folderName);
+    HKEY hKey = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER,
+                      L"Software\\Classes\\CLSID\\{7B39C2A2-3E1F-4E4C-9E58-2D9A7B1C4F60}",
+                      0, KEY_SET_VALUE, &hKey) == ERROR_SUCCESS) {
+        RegSetValueExW(hKey, nullptr, 0, REG_SZ,
+                       reinterpret_cast<const BYTE*>(displayName.c_str()),
+                       static_cast<DWORD>((displayName.size() + 1) * sizeof(wchar_t)));
+        RegCloseKey(hKey);
+    }
+}
+
+static std::wstring GetSearchOptionsLabel() {
+    std::wstring opts = LoadMuiString(L"@shell32.dll,-37459", L"Search options");
+    if (opts == L"Opzioni") return L"Opzioni di ricerca";
+    if (opts == L"Options") {
+        std::wstring thisPc = GetSystemThisPcName();
+        if (thisPc == L"Ce PC") return L"Options de recherche";
+        return L"Search options";
+    }
+    return opts;
 }
 
 // Per-window probe slots, keyed by the native XAML handle. No single global
@@ -2886,7 +2971,7 @@ static std::wstring WithFilterToken(const std::wstring& filter, const wchar_t* t
 }
 
 struct MenuEntry {
-    const wchar_t* label;
+    std::wstring label;
     const wchar_t* token;  // nullptr means "any"/clear the group
 };
 
@@ -2941,6 +3026,7 @@ static HRESULT AddSearchCommandBarButtons(IXamlDiagnostics* diagnostics,
 
     // There are two command bars in the window (tab strip and folder commands).
     // Pick the one that contains "Visualizza" so the button lands next to it.
+    const std::wstring viewMui = LoadMuiString(L"@ExplorerFrame.dll,-49933", L"View");
     auto commandBar = bars.back();
     unsigned insertAt = 0;
     for (auto bar : bars) {
@@ -2951,10 +3037,17 @@ static HRESULT AddSearchCommandBarButtons(IXamlDiagnostics* diagnostics,
             if (auto button =
                     candidate.try_as<winrt::Microsoft::UI::Xaml::Controls::AppBarButton>()) {
                 const std::wstring label(button.Label().c_str());
-                if (label.find(L"Visualizza") != std::wstring::npos ||
+                if ((!viewMui.empty() && label.find(viewMui) != std::wstring::npos) ||
+                    label.find(L"Visualizza") != std::wstring::npos ||
                     label.find(L"View") != std::wstring::npos ||
+                    label.find(L"Affichage") != std::wstring::npos ||
+                    label.find(L"Ansicht") != std::wstring::npos ||
+                    label.find(L"Ver") != std::wstring::npos ||
                     label.find(L"Ordina") != std::wstring::npos ||
-                    label.find(L"Sort") != std::wstring::npos) {
+                    label.find(L"Sort") != std::wstring::npos ||
+                    label.find(L"Trier") != std::wstring::npos ||
+                    label.find(L"Sortieren") != std::wstring::npos ||
+                    label.find(L"Ordenar") != std::wstring::npos) {
                     commandBar = bar;
                     insertAt = i + 1;
                     break;
@@ -2989,7 +3082,7 @@ static HRESULT AddSearchCommandBarButtons(IXamlDiagnostics* diagnostics,
     if (request.folder.empty()) request.folder = originFallback;
 
     auto options = winrt::Microsoft::UI::Xaml::Controls::AppBarButton();
-    options.Label(L"Opzioni di ricerca");
+    options.Label(winrt::hstring(GetSearchOptionsLabel()));
     auto flyout = winrt::Microsoft::UI::Xaml::Controls::MenuFlyout();
     flyout.Placement(
         winrt::Microsoft::UI::Xaml::Controls::Primitives::FlyoutPlacementMode::Bottom);
@@ -3009,7 +3102,7 @@ static HRESULT AddSearchCommandBarButtons(IXamlDiagnostics* diagnostics,
     const DWORD scopeFlag = static_cast<DWORD>(esx::ScopeToFolder);
     const DWORD recursiveFlag = static_cast<DWORD>(esx::IncludeSubfolders);
     auto allSubfolders = winrt::Microsoft::UI::Xaml::Controls::RadioMenuFlyoutItem();
-    allSubfolders.Text(L"Tutte le sottocartelle");
+    allSubfolders.Text(winrt::hstring(LoadMuiString(L"@shell32.dll,-37539", L"All subfolders")));
     allSubfolders.Icon(glyph(L"\uED41"));  // TreeFolderFolder
     allSubfolders.GroupName(L"EsxScope");
     allSubfolders.IsChecked(!(request.flags & scopeFlag) ||
@@ -3026,7 +3119,7 @@ static HRESULT AddSearchCommandBarButtons(IXamlDiagnostics* diagnostics,
     flyout.Items().Append(allSubfolders);
 
     auto currentFolder = winrt::Microsoft::UI::Xaml::Controls::RadioMenuFlyoutItem();
-    currentFolder.Text(L"Cartella corrente");
+    currentFolder.Text(winrt::hstring(LoadMuiString(L"@shell32.dll,-37541", L"Current folder")));
     currentFolder.Icon(glyph(L"\uE8B7"));
     currentFolder.GroupName(L"EsxScope");
     currentFolder.IsChecked((request.flags & scopeFlag) &&
@@ -3044,10 +3137,10 @@ static HRESULT AddSearchCommandBarButtons(IXamlDiagnostics* diagnostics,
     flyout.Items().Append(currentFolder);
     flyout.Items().Append(winrt::Microsoft::UI::Xaml::Controls::MenuFlyoutSeparator());
 
-    auto addSubmenu = [&](wchar_t const* text, wchar_t const* iconGlyph,
-                          std::initializer_list<MenuEntry> entries) {
+    auto addSubmenu = [&](const std::wstring& text, wchar_t const* iconGlyph,
+                          const std::vector<MenuEntry>& entries) {
         auto sub = winrt::Microsoft::UI::Xaml::Controls::MenuFlyoutSubItem();
-        sub.Text(text);
+        sub.Text(winrt::hstring(text));
         sub.Icon(glyph(iconGlyph));
         std::vector<std::wstring> group;
         for (const auto& entry : entries) {
@@ -3055,8 +3148,8 @@ static HRESULT AddSearchCommandBarButtons(IXamlDiagnostics* diagnostics,
         }
         for (const auto& entry : entries) {
             auto item = winrt::Microsoft::UI::Xaml::Controls::RadioMenuFlyoutItem();
-            item.Text(entry.label);
-            item.GroupName(text);
+            item.Text(winrt::hstring(entry.label));
+            item.GroupName(winrt::hstring(text));
             // "Any" is checked when none of the group tokens is active.
             bool checked = !entry.token;
             if (entry.token) {
@@ -3089,28 +3182,28 @@ static HRESULT AddSearchCommandBarButtons(IXamlDiagnostics* diagnostics,
         }
         flyout.Items().Append(sub);
     };
-    addSubmenu(L"Data ultima modifica", L"\uE787",  // Calendar
-               {{L"Qualsiasi ora", nullptr},
-                {L"Oggi", L"date-modified:today"},
-                {L"Ultimi 7 giorni", L"date-modified:7days"},
-                {L"Ultimo mese", L"date-modified:30days"}});
-    addSubmenu(L"Tipologia", L"\uE8A5",  // Document
-               {{L"Tutte le tipologie", nullptr},
-                {L"Documenti", L"doc:"},
-                {L"Immagini", L"image:"},
-                {L"Video", L"video:"},
-                {L"Audio", L"audio:"}});
-    addSubmenu(L"Dimensioni", L"\uED5E",  // Ruler
-               {{L"Qualsiasi dimensione", nullptr},
-                {L"Vuoto (0 byte)", L"size:0"},
-                {L"Molto piccolo (0 - 10 KB)", L"size:0..10kb"},
-                {L"Piccolo (10 - 100 KB)", L"size:10kb..100kb"}});
+    addSubmenu(LoadMuiString(L"@shell32.dll,-37545", L"Date modified"), L"\uE787",  // Calendar
+               {{LoadMuiString(L"@propsys.dll,-400", L"Any time"), nullptr},
+                {LoadMuiString(L"@propsys.dll,-106", L"Today"), L"date-modified:today"},
+                {LoadMuiString(L"@propsys.dll,-103", L"Last 7 days"), L"date-modified:7days"},
+                {LoadMuiString(L"@propsys.dll,-502", L"Last month"), L"date-modified:30days"}});
+    addSubmenu(LoadMuiString(L"@shell32.dll,-37547", L"Type"), L"\uE8A5",  // Document
+               {{LoadMuiString(L"@propsys.dll,-400", L"All types"), nullptr},
+                {LoadMuiString(L"@shell32.dll,-21770", L"Documents"), L"doc:"},
+                {LoadMuiString(L"@shell32.dll,-21779", L"Pictures"), L"image:"},
+                {LoadMuiString(L"@shell32.dll,-21791", L"Videos"), L"video:"},
+                {LoadMuiString(L"@propsys.dll,-38963", L"Audio"), L"audio:"}});
+    addSubmenu(LoadMuiString(L"@shell32.dll,-37549", L"Size"), L"\uED5E",  // Ruler
+               {{LoadMuiString(L"@propsys.dll,-400", L"Any size"), nullptr},
+                {LoadMuiString(L"@propsys.dll,-38569", L"Empty (0 KB)"), L"size:0"},
+                {LoadMuiString(L"@propsys.dll,-38598", L"Tiny (0 - 10 KB)"), L"size:0..10kb"},
+                {LoadMuiString(L"@propsys.dll,-38599", L"Small (10 - 100 KB)"), L"size:10kb..100kb"}});
     flyout.Items().Append(winrt::Microsoft::UI::Xaml::Controls::MenuFlyoutSeparator());
 
-    auto addToggle = [&](wchar_t const* text, wchar_t const* iconGlyph, const wchar_t* token,
+    auto addToggle = [&](const std::wstring& text, wchar_t const* iconGlyph, const wchar_t* token,
                          bool contentToggle) {
         auto item = winrt::Microsoft::UI::Xaml::Controls::ToggleMenuFlyoutItem();
-        item.Text(text);
+        item.Text(winrt::hstring(text));
         item.Icon(glyph(iconGlyph));
         item.IsChecked(contentToggle ? request.contentSearch
                                      : HasFilterToken(request.includeFilter, token));
@@ -3131,9 +3224,9 @@ static HRESULT AddSearchCommandBarButtons(IXamlDiagnostics* diagnostics,
         });
         flyout.Items().Append(item);
     };
-    addToggle(L"File di sistema", L"\uE8A6", L"attributes:s", false);  // ProtectedDocument
-    addToggle(L"Cartelle compresse (ZIP)", L"\uE7B8", L"zip:", false);  // Package
-    addToggle(L"Contenuto file", L"\uEE1A", nullptr, true);  // FolderSearch
+    addToggle(LoadMuiString(L"@shell32.dll,-37559", L"System files"), L"\uE8A6", L"attributes:s", false);  // ProtectedDocument
+    addToggle(LoadMuiString(L"@shell32.dll,-37561", L"Compressed folders (ZIP)"), L"\uE7B8", L"zip:", false);  // Package
+    addToggle(LoadMuiString(L"@shell32.dll,-37557", L"File contents"), L"\uEE1A", nullptr, true);  // FolderSearch
 
     options.Flyout(flyout);
 
@@ -3263,7 +3356,13 @@ static void ReplaceSearchBoxForState(const std::shared_ptr<WindowState>& state) 
 
             // Create and register the TextBox on the same dispatcher.
             auto box = winrt::Microsoft::UI::Xaml::Controls::TextBox();
-            box.PlaceholderText(L"Cerca con Everything");
+            const std::wstring initialScope = CurrentFolderPath(frame);
+            if (state && !initialScope.empty()) {
+                state->lastFolder = initialScope;
+                HWND curTab = ActiveTabWindow(frame);
+                if (curTab) SaveTabOrigin(curTab, initialScope);
+            }
+            box.PlaceholderText(winrt::hstring(GetSearchPlaceholderForFolder(initialScope)));
             // Restore this tab's last query; a brand-new tab starts empty.
             if (state && !state->queryText.empty()) {
                 box.Text(winrt::hstring(state->queryText));
@@ -3293,7 +3392,79 @@ static void ReplaceSearchBoxForState(const std::shared_ptr<WindowState>& state) 
             winrt::Microsoft::UI::Xaml::Controls::Grid::SetColumnSpan(
                 box, winrt::Microsoft::UI::Xaml::Controls::Grid::GetColumnSpan(element));
 
-            box.KeyDown([box, frame, weak = std::weak_ptr<WindowState>(state)](
+            auto triggerSearch = [box, frame, weak = std::weak_ptr<WindowState>(state)]() {
+                auto state = weak.lock();
+                if (!state) return;
+                const auto text = box.Text();
+                const std::wstring query(text.c_str(), text.size());
+                state->queryText = query;
+                const bool inResults = IsResultsFolder(frame);
+                const HWND key = ActiveTabWindow(frame);
+                if (query.empty()) {
+                    if (inResults) {
+                        if (key) SaveTabText(key, L"");
+                        WriteSearchRequest(L"", L"", key ? key : frame);
+                        NavigateToResults(frame);
+                    }
+                    return;
+                }
+                std::wstring scope;
+                if (inResults) {
+                    scope = key ? LoadTabOrigin(key) : state->origin;
+                    if (scope.empty()) scope = state->origin;
+                } else {
+                    scope = CurrentFolderPath(frame);
+                    if (!scope.empty()) {
+                        state->origin = scope;
+                        if (key) SaveTabOrigin(key, scope);
+                    } else {
+                        scope = key ? LoadTabOrigin(key) : state->origin;
+                    }
+                }
+                if (key) SaveTabText(key, query);
+                const bool written = WriteSearchRequest(query, scope, key ? key : frame);
+                Log("Live search query='%ls' scope='%ls' key=%p written=%d inResults=%d",
+                    query.c_str(), scope.c_str(), static_cast<void*>(key),
+                    written ? 1 : 0, inResults ? 1 : 0);
+                if (state) state->closingSearch.store(false);
+                if (written && IsWindow(frame)) {
+                    const int32_t selStart = box.SelectionStart();
+                    const int32_t selLen = box.SelectionLength();
+
+                    UpdateNseDisplayName(scope);
+                    NavigateToResults(frame);
+
+                    box.Focus(winrt::Microsoft::UI::Xaml::FocusState::Programmatic);
+                    box.SelectionStart(selStart);
+                    box.SelectionLength(selLen);
+
+                    auto queue = box.DispatcherQueue();
+                    if (queue) {
+                        auto refocusTimer = queue.CreateTimer();
+                        refocusTimer.Interval(std::chrono::milliseconds(120));
+                        refocusTimer.IsRepeating(false);
+                        refocusTimer.Tick([box, selStart, selLen](auto const& timerSender, auto const&) {
+                            timerSender.Stop();
+                            box.Focus(winrt::Microsoft::UI::Xaml::FocusState::Programmatic);
+                            box.SelectionStart(selStart);
+                            box.SelectionLength(selLen);
+                        });
+                        refocusTimer.Start();
+                    }
+                }
+            };
+
+            auto queue = box.DispatcherQueue();
+            if (queue) {
+                state->searchTimer = queue.CreateTimer();
+                state->searchTimer.Interval(std::chrono::milliseconds(300));
+                state->searchTimer.Tick([triggerSearch](auto const& sender, auto const&) {
+                    sender.Stop();
+                    triggerSearch();
+                });
+            }
+
+            box.KeyDown([box, frame, weak = std::weak_ptr<WindowState>(state), triggerSearch](
                             auto const&,
                             winrt::Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& args) {
                 auto state = weak.lock();
@@ -3303,39 +3474,14 @@ static void ReplaceSearchBoxForState(const std::shared_ptr<WindowState>& state) 
                 }
                 const int key = static_cast<int>(args.Key());
                 if (key == VK_RETURN) {
-                    const auto text = box.Text();
-                    if (text.empty()) {
-                        args.Handled(true);
-                        return;
-                    }
-                    const std::wstring query(text.c_str(), text.size());
-                    if (state) state->queryText = query;
-                    const bool inResults = IsResultsFolder(frame);
-                    // Keep the folder the first search started from: a second
-                    // search inside the results view has no filesystem path of
-                    // its own, so the original scope must be carried over.
-                    // This is per-window state, like the request file.
-                    std::wstring scope;
-                    if (inResults) {
-                        scope = state ? state->origin : std::wstring();
-                    } else {
-                        scope = CurrentFolderPath(frame);
-                        if (state && !scope.empty()) state->origin = scope;
-                    }
-                    const HWND key = ActiveTabWindow(frame);
-                    if (key) SaveTabText(key, query);
-                    const bool written = WriteSearchRequest(query, scope, key ? key : frame);
-                    Log("C3 Enter query='%ls' scope='%ls' key=%p written=%d",
-                        query.c_str(), scope.c_str(), static_cast<void*>(key),
-                        written ? 1 : 0);
-                    if (state) state->closingSearch.store(false);
-                    if (written && IsWindow(frame)) NavigateToResults(frame);
+                    if (state->searchTimer) state->searchTimer.Stop();
+                    triggerSearch();
                     box.Focus(winrt::Microsoft::UI::Xaml::FocusState::Programmatic);
-                    // Focus/Text assignment can reset the caret to position 0.
-                    box.SelectionStart(static_cast<int32_t>(text.size()));
+                    box.SelectionStart(static_cast<int32_t>(box.Text().size()));
                     box.SelectionLength(0);
                     args.Handled(true);
                 } else if (key == VK_ESCAPE) {
+                    if (state->searchTimer) state->searchTimer.Stop();
                     if (IsResultsFolder(frame)) {
                         CloseSearchForFrame(frame, state);
                     } else {
@@ -3345,7 +3491,7 @@ static void ReplaceSearchBoxForState(const std::shared_ptr<WindowState>& state) 
                     args.Handled(true);
                 }
             });
-            box.TextChanged([box, frame, weak = std::weak_ptr<WindowState>(state)](
+            box.TextChanged([box, frame, weak = std::weak_ptr<WindowState>(state), triggerSearch](
                                  auto const&, auto const&) {
                 auto state = weak.lock();
                 if (!state || state->closingSearch.load()) return;
@@ -3353,11 +3499,18 @@ static void ReplaceSearchBoxForState(const std::shared_ptr<WindowState>& state) 
                 const std::wstring current(box.Text().c_str(), box.Text().size());
                 const HWND tab = ActiveTabWindow(frame);
                 if (tab) SaveTabText(tab, current);
-                // IsResultsFolder() enumerates IShellWindows: only pay for it
-                // when the field actually became empty.
-                if (current.empty() && IsResultsFolder(frame)) {
-                    Log("C3 clear button closes search frame=%p", frame);
-                    CloseSearchForFrame(frame, state);
+                if (state->searchTimer) {
+                    state->searchTimer.Stop();
+                }
+                if (current.empty()) {
+                    triggerSearch();
+                } else {
+                    const bool isDeleting = (current.size() < state->queryText.size());
+                    const int delayMs = isDeleting ? 80 : 250;
+                    if (state->searchTimer) {
+                        state->searchTimer.Interval(std::chrono::milliseconds(delayMs));
+                        state->searchTimer.Start();
+                    }
                 }
             });
             box.GotFocus([weak = std::weak_ptr<WindowState>(state)](auto const&, auto const&) {
@@ -4093,6 +4246,32 @@ bool GetBrowserForWindow(HWND frame, winrt::com_ptr<IShellBrowser>& browser) {
 // not on IShellBrowser: the latter does not implement IWebBrowser2 in current
 // Explorer builds, which is why the old fallback always returned an empty path.
 std::wstring LocationUrlPathForWindow(HWND frame) {
+    HWND targetTab = ActiveTabWindow(frame);
+    if (!targetTab) targetTab = frame;
+
+    winrt::com_ptr<IShellBrowser> activeBrowser;
+    if (GetBrowserForWindow(targetTab, activeBrowser) && activeBrowser) {
+        winrt::com_ptr<IShellView> activeView;
+        if (SUCCEEDED(activeBrowser->QueryActiveShellView(activeView.put())) && activeView) {
+            winrt::com_ptr<IFolderView> folderView;
+            if (SUCCEEDED(activeView->QueryInterface(IID_PPV_ARGS(folderView.put()))) && folderView) {
+                winrt::com_ptr<IPersistFolder2> persistFolder;
+                if (SUCCEEDED(folderView->GetFolder(IID_PPV_ARGS(persistFolder.put()))) && persistFolder) {
+                    PIDLIST_ABSOLUTE pidl = nullptr;
+                    if (SUCCEEDED(persistFolder->GetCurFolder(&pidl)) && pidl) {
+                        wchar_t pathBuf[MAX_PATH]{};
+                        if (SHGetPathFromIDListW(pidl, pathBuf)) {
+                            CoTaskMemFree(pidl);
+                            Log("LocationUrlPathForWindow: resolved directly from active tab view: '%ls'", pathBuf);
+                            return std::wstring(pathBuf);
+                        }
+                        CoTaskMemFree(pidl);
+                    }
+                }
+            }
+        }
+    }
+
     winrt::com_ptr<IShellWindows> windows;
     if (FAILED(CoCreateInstance(CLSID_ShellWindows, nullptr, CLSCTX_ALL,
                                 IID_PPV_ARGS(windows.put())))) {
@@ -4236,23 +4415,25 @@ void NavigateToResults(HWND frame) {
 
     winrt::com_ptr<IShellBrowser> browser;
     if (GetBrowserForWindow(frame, browser) && browser) {
-        const HRESULT hr = browser->BrowseObject(pidl, SBSP_ABSOLUTE | SBSP_SAMEBROWSER);
-        Log("BrowseObject hr=0x%08X wasResults=%d", hr, wasResults ? 1 : 0);
-        if (FAILED(hr)) {
-            SHELLEXECUTEINFOW info{};
-            info.cbSize = sizeof(info);
-            info.fMask = SEE_MASK_INVOKEIDLIST | SEE_MASK_IDLIST;
-            info.lpVerb = L"open";
-            info.lpIDList = pidl;
-            info.nShow = SW_SHOWNORMAL;
-            ShellExecuteExW(&info);
-        } else if (wasResults) {
-            // Browsing to the same CLSID PIDL is a no-op for Explorer, so a new
-            // search issued from inside the results view would keep showing the
-            // previous query. Ask the shell to update this folder; Explorer
-            // re-enumerates and the extension reads this window's request.
+        if (wasResults) {
+            winrt::com_ptr<IShellView> view;
+            if (SUCCEEDED(browser->QueryActiveShellView(view.put())) && view) {
+                view->Refresh();
+                Log("ActiveShellView->Refresh() called for frame=%p", frame);
+            }
             SHChangeNotify(SHCNE_UPDATEDIR, SHCNF_IDLIST | SHCNF_FLUSHNOWAIT, pidl, nullptr);
-            Log("results change notification sent");
+        } else {
+            const HRESULT hr = browser->BrowseObject(pidl, SBSP_ABSOLUTE | SBSP_SAMEBROWSER);
+            Log("BrowseObject hr=0x%08X wasResults=%d", hr, wasResults ? 1 : 0);
+            if (FAILED(hr)) {
+                SHELLEXECUTEINFOW info{};
+                info.cbSize = sizeof(info);
+                info.fMask = SEE_MASK_INVOKEIDLIST | SEE_MASK_IDLIST;
+                info.lpVerb = L"open";
+                info.lpIDList = pidl;
+                info.nShow = SW_SHOWNORMAL;
+                ShellExecuteExW(&info);
+            }
         }
     }
     CoTaskMemFree(pidl);
@@ -4843,7 +5024,7 @@ HRESULT CreateSession(HWND frame) {
         Log("source initialized for frame=%p", frame);
 
         session->box = winrt::Microsoft::UI::Xaml::Controls::TextBox();
-        session->box.PlaceholderText(L"Cerca con Everything");
+        session->box.PlaceholderText(winrt::hstring(GetSearchPlaceholderForFolder(CurrentFolderPath(frame))));
         session->box.MaxLength(1024);
         session->box.VerticalContentAlignment(
             winrt::Microsoft::UI::Xaml::VerticalAlignment::Center);
@@ -5254,13 +5435,15 @@ DWORD WINAPI CoordinatorThread(LPVOID) {
                     state->tab = tab;
                 }
                 const std::wstring text = LoadTabText(tab);
-                PostToStateDispatcher(state, [state, text, tab]() {
+                const std::wstring tabScope = LoadTabOrigin(tab);
+                PostToStateDispatcher(state, [state, text, tab, tabScope]() {
                     if (!state->textBox) return;
                     state->ignoreNextEmpty.store(true);
                     state->textBox.Text(winrt::hstring(text));
                     state->textBox.SelectionStart(static_cast<int32_t>(text.size()));
                     state->textBox.SelectionLength(0);
-                    Log("tab switched to=%p restored query='%ls'", tab, text.c_str());
+                    state->textBox.PlaceholderText(winrt::hstring(GetSearchPlaceholderForFolder(tabScope)));
+                    Log("tab switched to=%p restored query='%ls' scope='%ls'", tab, text.c_str(), tabScope.c_str());
                 });
             }
 
@@ -5280,9 +5463,22 @@ DWORD WINAPI CoordinatorThread(LPVOID) {
             for (const auto& state : buttonStates) {
                 const ULONGLONG last = state->lastButtonCheck.load();
                 // Short enough to hide the button promptly on navigation.
-                if (now - last < 250) continue;
+                if (now - last < 1000) continue;
                 state->lastButtonCheck.store(now);
                 const bool visible = IsResultsFolder(state->frame);
+                if (!visible) {
+                    const std::wstring currentFolder = CurrentFolderPath(state->frame);
+                    if (currentFolder != state->lastFolder) {
+                        state->lastFolder = currentFolder;
+                        const HWND curTab = ActiveTabWindow(state->frame);
+                        if (curTab) SaveTabOrigin(curTab, currentFolder);
+                        PostToStateDispatcher(state, [state, currentFolder]() {
+                            if (!state->textBox) return;
+                            state->textBox.PlaceholderText(
+                                winrt::hstring(GetSearchPlaceholderForFolder(currentFolder)));
+                        });
+                    }
+                }
                 if (visible == state->buttonsVisible.load()) continue;
                 state->buttonsVisible.store(visible);
                 PostToStateDispatcher(state, [state, visible]() {

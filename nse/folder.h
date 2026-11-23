@@ -29,7 +29,7 @@
 inline constexpr GUID CLSID_EverythingSearchFolder = {
     0x7b39c2a2, 0x3e1f, 0x4e4c, {0x9e, 0x58, 0x2d, 0x9a, 0x7b, 0x1c, 0x4f, 0x60}};
 
-inline constexpr wchar_t kFolderFriendlyName[] = L"Everything Search";
+inline constexpr wchar_t kFolderFriendlyName[] = L"Search results";
 
 extern HINSTANCE g_hInst;
 extern LONG g_cRefDll;
@@ -227,12 +227,6 @@ private:
     LONG m_ref = 1;
     PIDLIST_ABSOLUTE m_rootPidl = nullptr;
 
-    // Unique per folder instance so a stale cancel from a destroyed folder
-    // cannot abort a new folder allocated at the same address.
-    inline static std::atomic<std::uint64_t> s_nextCancelToken{1};
-    const std::uint64_t m_cancelToken =
-        s_nextCancelToken.fetch_add(1, std::memory_order_relaxed);
-
     mutable std::mutex m_mutex;
     std::mutex m_fetchMutex;       // serializes page IPC without holding m_mutex
     std::atomic<std::uint64_t> m_generation{0};
@@ -251,7 +245,6 @@ private:
     std::wstring m_query;
     std::wstring m_folder;
     std::wstring m_filter;
-    std::wstring m_includeFilter;
     bool m_contentSearch = false;
 
     HWND m_viewHwnd = nullptr;
@@ -278,14 +271,6 @@ private:
         m_folder->AddRef();
     }
     ~CEnumIDList() { m_folder->Release(); }
-
-    void SyncGeneration() {
-        const std::uint64_t current = m_folder->Generation();
-        if (current != m_generation) {
-            m_generation = current;
-            m_index = 0;
-        }
-    }
 
     LONG m_ref = 1;
     CFolder* m_folder = nullptr;

@@ -194,6 +194,26 @@ SFGAOF AttributesFromFileFlags(DWORD fileAttributes) {
     return attributes;
 }
 
+std::wstring LoadMuiString(const wchar_t* resourceId, const wchar_t* fallback) {
+    wchar_t buffer[512]{};
+    if (::SHLoadIndirectString(resourceId, buffer, static_cast<UINT>(ARRAYSIZE(buffer)), nullptr) == S_OK) {
+        if (buffer[0] != L'\0') {
+            return buffer;
+        }
+    }
+    return fallback;
+}
+
+std::wstring FormatWithFolder(const std::wstring& pattern, const std::wstring& folder) {
+    const size_t pos = pattern.find(L"%s");
+    if (pos == std::wstring::npos) {
+        return pattern + L" " + folder;
+    }
+    std::wstring result = pattern;
+    result.replace(pos, 2, folder);
+    return result;
+}
+
 }  // namespace
 
 // =========================================================== CFolder / COM
@@ -220,7 +240,6 @@ HRESULT CFolder::Create(REFIID riid, void** ppv) {
 }
 
 CFolder::~CFolder() {
-    bridge::CancelQuery(m_cancelToken);
     ClearItems();
     if (m_rootPidl) ::CoTaskMemFree(m_rootPidl);
     ::InterlockedDecrement(&g_cRefDll);
@@ -306,11 +325,15 @@ const CFolder::Item* CFolder::FindItemLocked(const std::wstring& path) const {
 }
 
 std::wstring CFolder::DisplayNameLocked(SHGDNF uFlags) const {
-    // Match Explorer's search view: the address bar shows the searched folder,
-    // while the tab title prefixes the query.
-    std::wstring folder = m_folder;
-    if (folder.empty()) folder = L"Questo PC";
-    const std::wstring base = L"Risultati ricerca in " + folder;
+    std::wstring folderName;
+    if (!m_folder.empty()) {
+        folderName = FileNameOf(m_folder);
+        if (folderName.empty()) folderName = m_folder;
+    } else {
+        folderName = LoadMuiString(L"@shell32.dll,-9216", L"This PC");
+    }
+    const std::wstring pattern = LoadMuiString(L"@shell32.dll,-34132", L"Search results in %s");
+    const std::wstring base = FormatWithFolder(pattern, folderName);
 
     if (uFlags & SHGDN_FORADDRESSBAR) return base;
     if (m_query.empty()) return base;
@@ -320,9 +343,9 @@ std::wstring CFolder::DisplayNameLocked(SHGDNF uFlags) const {
 void CFolder::AppendPageLocked(const std::vector<esx::QueryResultItem>& page) {
     m_items.reserve(m_items.size() + page.size());
     for (const auto& r : page) {
-        // The old removal lived only in bridge::Query(), which Explorer never
-        // calls: filter here so the lazy enumerator used by the shell does not
-        // show the origin folder.
+        // `path:"C:\dir" *` matches the directory itself. The old removal lived
+        // only in bridge::Query(), which Explorer never calls: filter here so
+        // the lazy enumerator used by the shell does not show the origin folder.
         if ((m_flags & static_cast<DWORD>(esx::ScopeToFolder)) && !m_folder.empty() &&
             IsSamePathIgnoringTrailingSlash(r.path, m_folder)) {
             continue;
@@ -377,11 +400,8 @@ bool CFolder::LoadMore() {
 
     if (!bridge::EnsureReady()) {
         std::lock_guard<std::mutex> lock(m_mutex);
-        // A replaced query must not fail this one.
-        if (generation == m_generation.load(std::memory_order_relaxed)) {
-            m_failed = true;
-            m_queryComplete = true;
-        }
+        m_failed = true;
+        m_queryComplete = true;
         return false;
     }
 
@@ -389,14 +409,10 @@ bool CFolder::LoadMore() {
     DWORD raw = 0;
     DWORD total = 0;
     std::string error;
-    if (!bridge::QueryPage(search, offset, flags, wanted, page, raw, total, error,
-                           m_cancelToken)) {
+    if (!bridge::QueryPage(search, offset, flags, wanted, page, raw, total, error)) {
         std::lock_guard<std::mutex> lock(m_mutex);
-        // A replaced query must not fail this one.
-        if (generation == m_generation.load(std::memory_order_relaxed)) {
-            m_failed = true;
-            m_queryComplete = true;
-        }
+        m_failed = true;
+        m_queryComplete = true;
         ::OutputDebugStringA(("[esx] " + error + "\n").c_str());
         return false;
     }
@@ -430,19 +446,32 @@ void CFolder::LoadItemsLocked(HWND frameHint) {
         m_query.clear();
         m_folder.clear();
         m_filter.clear();
-        m_includeFilter.clear();
         m_contentSearch = false;
         return;
     }
     ESX_TRACE_LOG("LoadItems frame=%p seq=%u query='%ls'", static_cast<void*>(frame),
                   request.seq, request.query.c_str());
 
+    // When the query is empty, show an empty list immediately without sending a wildcard search to Everything.
+    if (request.query.empty()) {
+        ClearItems();
+        m_generation.fetch_add(1, std::memory_order_relaxed);
+        m_loaded = true;
+        m_failed = false;
+        m_seq = request.seq;
+        m_query.clear();
+        m_folder.clear();
+        m_filter.clear();
+        m_contentSearch = false;
+        m_queryComplete = true;
+        return;
+    }
+
     // Everything view refreshes re-enumerate constantly; skip the round trip
     // when the request did not change.
     if (m_loaded && request.seq == m_seq && request.query == m_query &&
         request.folder == m_folder && request.maxResults == m_maxResults &&
         request.flags == m_flags && request.filter == m_filter &&
-        request.includeFilter == m_includeFilter &&
         request.contentSearch == m_contentSearch) {
         return;
     }
@@ -455,7 +484,6 @@ void CFolder::LoadItemsLocked(HWND frameHint) {
     m_query = request.query;
     m_folder = request.folder;
     m_filter = request.filter;
-    m_includeFilter = request.includeFilter;
     m_contentSearch = request.contentSearch;
     m_maxResults = request.maxResults;
     m_flags = request.flags;
@@ -782,7 +810,14 @@ HRESULT STDMETHODCALLTYPE CFolder::GetUIObjectOf(HWND, UINT cidl,
     // Items are real filesystem entries, so every heavy lifting operation is
     // delegated to the shell. No custom verbs, no custom drag source.
     std::vector<PIDLIST_ABSOLUTE> absolute(cidl, nullptr);
-    // Placed before the loop so early returns still free parsed PIDLs.
+    std::vector<std::wstring> paths(cidl);
+    for (UINT i = 0; i < cidl; ++i) {
+        if (!GetPidlPath(apidl[i], paths[i])) return E_INVALIDARG;
+        if (FAILED(::SHParseDisplayName(paths[i].c_str(), nullptr, &absolute[i], 0, nullptr))) {
+            return E_FAIL;
+        }
+    }
+
     struct Cleanup {
         std::vector<PIDLIST_ABSOLUTE>& list;
         ~Cleanup() {
@@ -791,14 +826,6 @@ HRESULT STDMETHODCALLTYPE CFolder::GetUIObjectOf(HWND, UINT cidl,
             }
         }
     } cleanup{absolute};
-
-    std::vector<std::wstring> paths(cidl);
-    for (UINT i = 0; i < cidl; ++i) {
-        if (!GetPidlPath(apidl[i], paths[i])) return E_INVALIDARG;
-        if (FAILED(::SHParseDisplayName(paths[i].c_str(), nullptr, &absolute[i], 0, nullptr))) {
-            return E_FAIL;
-        }
-    }
 
     if (IsEqualIID(riid, IID_IContextMenu) || IsEqualIID(riid, IID_IContextMenu2) ||
         IsEqualIID(riid, IID_IContextMenu3)) {
@@ -985,13 +1012,6 @@ HRESULT STDMETHODCALLTYPE CFolder::GetDetailsEx(PCUITEMID_CHILD pidl, const SHCO
     }
     if (IsEqualPropertyKey(*pscid, PKEY_ItemTypeText)) {
         std::wstring text = TypeNameOf(path.c_str(), attributes);
-        // Content view renders this property on the second line. Append the
-        // containing directory so it is visible without switching to Details.
-        const std::wstring directory = ParentDirectoryOf(path);
-        if (!directory.empty()) {
-            if (!text.empty()) text += L"  \u2022  ";
-            text += directory;
-        }
         if (text.empty()) return S_FALSE;
         PROPVARIANT prop;
         ::PropVariantInit(&prop);
@@ -1040,7 +1060,7 @@ HRESULT STDMETHODCALLTYPE CFolder::GetDetailsOf(PCUITEMID_CHILD pidl, UINT iColu
             case 1: fallback = L"Size"; break;
             case 2: fallback = L"Type"; break;
             case 3: fallback = L"Date modified"; break;
-            case 4: fallback = L"Cartella"; break;
+            case 4: fallback = L"Folder path"; break;
         }
         const std::wstring name = [iColumn, fallback]() -> std::wstring {
             switch (iColumn) {
@@ -1142,12 +1162,10 @@ HRESULT STDMETHODCALLTYPE CFolder::MessageSFVCB(UINT message, WPARAM wParam, LPA
             return E_NOTIMPL;
         }
         case SFVM_DEFVIEWMODE: {
-            // Content view shows the name plus the second line supplied through
-            // PKEY_ItemTypeText (type and containing directory).
             auto* mode = reinterpret_cast<FOLDERVIEWMODE*>(lParam);
             if (!mode) return E_INVALIDARG;
-            *mode = FVM_CONTENT;
-            ESX_TRACE_LOG("SFVM_DEFVIEWMODE -> FVM_CONTENT");
+            *mode = FVM_DETAILS;
+            ESX_TRACE_LOG("SFVM_DEFVIEWMODE -> FVM_DETAILS");
             return S_OK;
         }
         case SFVM_DEFITEMCOUNT: {
@@ -1237,13 +1255,12 @@ ULONG STDMETHODCALLTYPE CEnumIDList::Release() {
 HRESULT STDMETHODCALLTYPE CEnumIDList::Next(ULONG celt, PITEMID_CHILD* rgelt,
                                             ULONG* pceltFetched) {
     if (!rgelt) return E_POINTER;
-    // A null count is only valid when one item is requested.
-    if (celt > 1 && !pceltFetched) return E_POINTER;
     if (pceltFetched) *pceltFetched = 0;
-    SyncGeneration();
+    if (m_folder->Generation() != m_generation) return S_FALSE;
 
     ULONG fetched = 0;
     while (fetched < celt) {
+        if (m_folder->Generation() != m_generation) break;
         if (!m_folder->EnsureLoaded(m_index)) break;
         std::wstring path;
         if (!m_folder->GetPathAt(m_index, path)) break;
@@ -1262,9 +1279,10 @@ HRESULT STDMETHODCALLTYPE CEnumIDList::Next(ULONG celt, PITEMID_CHILD* rgelt,
 }
 
 HRESULT STDMETHODCALLTYPE CEnumIDList::Skip(ULONG celt) {
-    SyncGeneration();
+    if (m_folder->Generation() != m_generation) return S_FALSE;
     ULONG skipped = 0;
     while (skipped < celt) {
+        if (m_folder->Generation() != m_generation) return S_FALSE;
         if (!m_folder->EnsureLoaded(m_index)) return S_FALSE;
         std::wstring path;
         if (!m_folder->GetPathAt(m_index, path)) return S_FALSE;
