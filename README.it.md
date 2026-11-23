@@ -141,8 +141,10 @@ Compila e installa:
 .\install-mod.ps1               # registra la mod (admin) e riavvia Windhawk
 ```
 
-Riavvia Explorer dopo `.\install-nse.ps1`. Lo script non lo riavvia da solo e,
-se lo salti, la cartella risultati può restare vuota.
+`.\install-nse.ps1` riavvia Explorer alla fine per caricare la nuova DLL. Se una
+ricompila mantiene la stessa versione, lo script usa una cartella sorella
+(per esempio `0.3.7-1`) quando la vecchia DLL è ancora bloccata: l'installazione
+funziona comunque.
 
 `mod\build-mod.ps1` genera le intestazioni C++/WinRT alla prima esecuzione.
 Per rimuovere tutto: `.\uninstall-mod.ps1` e `.\uninstall-nse.ps1`.

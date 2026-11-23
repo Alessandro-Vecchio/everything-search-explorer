@@ -140,8 +140,9 @@ Build and install:
 .\install-mod.ps1               # register the mod (admin) and restart Windhawk
 ```
 
-Restart Explorer after `.\install-nse.ps1`. The script does not restart it, and
-skipping this can leave the results folder empty.
+`.\install-nse.ps1` restarts Explorer at the end so the new DLL is loaded.
+If a rebuild keeps the same version, the script falls back to a sibling folder
+(e.g. `0.3.7-1`) when the old DLL is still locked, so the install still works.
 
 `mod\build-mod.ps1` generates the C++/WinRT headers on first run. To remove
 everything: `.\uninstall-mod.ps1` and `.\uninstall-nse.ps1`.

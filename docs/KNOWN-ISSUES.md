@@ -8,57 +8,34 @@ Use `tools/diagnose.ps1` to produce the evidence mentioned below.
 
 ---
 
-## ES-01 - `Current folder` scope lost on a second search - OPEN, high
+## ES-02 - Superseded live searches can leave stale results - OPEN, FIX ATTEMPTED, NOT VERIFIED
 
-**Symptom.** After searching from a real folder, a second search submitted from
-inside the results view loses the origin folder. Selecting *Current folder*
-then produces `parent:""` and returns nothing.
+**Repro.** Type a short query such as `p` and let live search start. Before it
+finishes, change the text to `pdf` without pressing Enter. The request file and
+Everything can contain `pdf` while Explorer continues enumerating the old
+`p` result set.
 
-**Repro.**
+**Cause.** Explorer can enumerate through a separate `CFolder` instance from
+the one that receives view callbacks. Generation and IPC cancellation were
+owned by each instance, so updating the new instance did not invalidate the old
+enumerator or cancel its in-flight Everything page. `Refresh()` may also return
+`S_FALSE`; the mod now sends the update notification for any result other than
+`S_OK`.
 
-1. Open a real folder and search (e.g. `C:\`, query `Onedrive`): request has
-   `flags=7`, `folder='C:\'`.
-2. Press Enter again while the results view is active: request is rewritten with
-   `flags=2`, `folder=''`.
-3. Choose *Search options → Current folder*: `flags=3`, `folder=''` → broken.
+**Implementation.** NSE folders for the same Explorer tab share a request
+generation, so an enumerator created from an older folder instance stops when
+the request sequence changes. In-flight page IPC jobs carry the tab identity
+and sequence, allowing a newer request to cancel the superseded Everything
+query. The mod also retries a coalesced refresh until the results view is
+active, and uses an update notification when `Refresh()` does not return `S_OK`.
 
-**Evidence** (from an actual log):
+**Status.** A fix has been attempted (shared generation, IPC cancellation,
+coalesced refresh and update notification), but the result has never been
+verified in Explorer. Treat this issue as open, not resolved.
 
-```
-20:31:30 writing search request frame=... flags=7 folder='C:\' query='Onedrive'
-20:32:12 writing search request frame=... flags=2 folder='' query='Onedrive'
-20:32:15 options applied ... flags=0x3
-request-2295964.txt: flags=3, folder=''
-```
-
-**Hypothesis.** `IsResultsFolder(frame)` intermittently returns false for a
-search submitted from the results view (caller thread / focus / timing). The
-`KeyDown` handler then takes the "not in results" branch, calls
-`CurrentFolderPath()`, which returns an empty string because the NSE folder is
-a virtual namespace with no filesystem path, and fails to reuse `state->origin`.
-The `originFallback` captured by the option-menu click handlers is a snapshot
-taken when the flyout is built, so it can also be empty.
-
-**Next step.** Never overwrite a non-empty folder with an empty path; read
-`state->origin` at click time rather than capturing it at flyout construction;
-if the folder is still empty, keep *Current folder* disabled and do not write a
-`parent:""` modifier. Affects `mod/everything-search-explorer.wh.cpp`
-(`ApplySearchOptions`, `KeyDown` handler, option flyout).
-
----
-
-## ES-02 - Second search with many results renders late - PARKED
-
-**Symptom.** After a second consecutive search with a large result set, the new
-list becomes visible only after the whole re-enumeration finishes.
-
-**Hypothesis.** In-place navigation to the same PIDL plus
-`SHChangeNotify(SHCNE_UPDATEDIR)` and DefView's own caching; the NSE cannot change
-item identities cheaply enough. A dynamic/token PIDL approach for the second
-render was considered and parked.
-
-**Next step.** Revisit only if it becomes a blocking complaint; measure against
-`tests/run-mingw.ps1` first.
+**Still open.** The `p` → `pdf` case needs manual verification in Explorer,
+including confirming that old rows stop loading and the new rows appear without
+pressing Enter.
 
 ---
 
@@ -111,28 +88,78 @@ changing code.
 
 ---
 
-## ES-07 - Inclusion toggles (system / ZIP / content) unfinished - OPEN
+## ES-07 - Inclusion toggles (system / ZIP / content) - OPEN, FIX ATTEMPTED, NOT VERIFIED
 
-**Symptom.** The three checkmarked options in *Search options* do not yet behave
+**Symptom.** The three checkmarked options in *Search options* do not all behave
 as intended. With a query such as `.zip`, results were empty when a previous
 `filter=doc:` was still active (AND narrowing), and terms added as bare OR
 (`zip:` / `attributes:s`) returned every ZIP or system file regardless of the
 query.
 
-**State.** Work in progress. An `include=` field was added to the request
-protocol and `BuildSearchStringInternal()` was changed several times (AND, OR,
-`!` exclusions, `< >` grouping) without end-to-end verification. None of these
-variants is confirmed correct.
+**Root cause (system files, found).** The query builder added `!attributes:s` to
+every search by default. Everything does not index attributes (`index_attributes`
+defaults to 0), so `attributes:` falls back to a per-file lookup: on a ~550k
+result index the query took 11-22 s, exceeded the NSE's 5 s reply timeout, and
+the view showed **0 results** for every plain search. Reproduced with
+`tests/ipc_probe.cpp` (same query, reply arrives after ~11-22 s) and
+`tests/run-mingw.ps1 -Ipc` / `nse_probe` (query `p`, total 0).
 
-**Intended behaviour.** Toggles widen the search: with every option active the
-user expects files whose name matches the query, plus system files, plus ZIPs,
-plus files whose content matches the query (content search only if Everything
-1.5+ supports it). With all options off, only normal matches should appear.
+**Fix.** `BuildSearchStringInternal()` no longer sends `!attributes:s`; system
+files are dropped in `ParseReply()` using the attributes Everything already
+returns with each item (`includeSystemFiles`, driven by the `attributes:s`
+include token). The ZIP toggle still uses `!zip:` (an indexed filter macro, fast).
+The per-token OR alternatives were removed: when a toggle is on, simply omitting
+its exclusion already widens the search, and the old OR clause returned every
+archive/system file regardless of the query.
 
-**Next step.** Verify the exact query string sent to Everything for each
-toggle combination with `tools/diagnose.ps1` and a real results view, then settle
-on one query construction and remove the unused variants. Do not treat the
-current `include=` logic as finished.
+**Expected behavior.** Each enabled toggle admits matches for the typed query
+from its category; disabling it removes that category's matches. System and
+ZIP results still have to match the query. Content matches are an alternative
+to filename matches, while the selected scope and type/date/size filters apply
+to both alternatives.
+
+**Current implementation.** ZIP matches are admitted by omitting `!zip:`;
+system matches are retained or discarded locally using the attributes returned
+by Everything. Content matches use a grouped `content:<query>` alternative,
+with the same scope, filters, and ZIP exclusion as filename matches. The menu
+refreshes its checked state from the active tab when opened. Superseded IPC
+queries are cancelled when the NSE folder's request changes.
+
+**Status.** A fix has been attempted (local system-file filtering, ZIP
+exclusion only when disabled, grouped content alternative, menu state resync),
+but no Explorer verification has confirmed it. Treat this issue as open, not
+resolved.
+
+**Still open.** No manual Explorer interaction has verified every toggle
+combination after these changes. The ZIP default (`!zip:`) is a product choice,
+not an Everything default.
+
+**Next step.** Verify filename, content, ZIP and system matches with one
+representative query and with type/date/size filters active, then update this
+entry if any combination differs from the expected behavior.
+
+---
+
+## ES-08 - Search box loses focus on live search - OPEN, FIX ATTEMPTED, NOT FIXED
+
+**Symptom.** Type a query without pressing Enter; when live search switches the
+view to the results folder, the search box loses focus.
+
+**Evidence.** `%TEMP%\everything-search-explorer.log` shows the same sequence on
+every occurrence: `BrowseObject hr=0x00000000`, `DIRECT focus gained` after
+~14 ms, then `DIRECT focus lost` after ~445 ms, with no recovery until the user
+interacts again.
+
+**Attempted fix.** `focusRestoreTimer` was changed from a one-shot 180 ms timer
+to a repeating 100 ms timer (12 attempts) that checks the real
+`box.FocusState()` instead of the cached `textHasFocus` flag. That build was
+installed and the log still showed the focus loss, so the fix does not work.
+The retry code is still present in the mod.
+
+**Status.** OPEN, confirmed not fixed. The cause is not established: the
+foreground-window guard and `TextChanged` stopping `focusRestoreTimer` were
+considered but not proven. An event-driven restore on `LostFocus` is the next
+candidate, to be implemented and verified only when requested.
 
 ---
 

@@ -13,7 +13,7 @@ Compact guidance for work in this repository. The README is the user-facing sour
 
 ```powershell
 .\build-nse.ps1                                                  # NSE build (MSVC/CMake) -> dist\bin
-.\install-nse.ps1 -RestartExplorer                               # register HKCU CLSID + copy DLL
+.\install-nse.ps1                                                # register HKCU CLSID + copy DLL, restart Explorer
 .\mod\build-mod.ps1                                              # mod build (auto-regenerates WinRT headers)
 .\install-mod.ps1                                                # self-elevates, builds, registers HKLM, restarts Windhawk
 .\install-mod.ps1 -SkipBuild -NoRestart                          # reuse newest DLL, no engine restart
@@ -30,7 +30,7 @@ Compact guidance for work in this repository. The README is the user-facing sour
 
 - Windhawk metadata blocks in the `.wh.cpp` (`==WindhawkModReadme==` and `==WindhawkModSettings==`) **must contain `/* ... */` comments**, not `//` lines. With line comments the Windhawk UI silently shows no README and no settings.
 - Source `@id` is `everything-search-explorer`; the installed mod key is `local@everything-search-explorer`. Changing that ID creates a new mod and resets its settings.
-- Keep `// @version` in `mod/everything-search-explorer.wh.cpp` and `ESX_VERSION_STRING` in `nse/version.h` in sync; `install-mod.ps1` warns on mismatch.
+- `// @version` in `mod/everything-search-explorer.wh.cpp` and `ESX_VERSION_STRING` in `nse/version.h` are independent: the mod and the NSE are versioned and installed separately.
 - Search handoff: `%LOCALAPPDATA%\EverythingSearchExplorer\request-<HWND>.txt` per window, plus a global `request.txt` fallback. Flags: bit 0 = scope, bit 1 = include folders, bit 2 = recursive. Scope + recursive → `path:"...\"` (trailing backslash keeps the scope strict); scope without recursive → `parent:"..."`. `max=0` means no limit.
 - Mod log: `%TEMP%\everything-search-explorer.log`. `tools/diagnose.ps1` decodes flags and flags broken states such as scope set with an empty folder.
 - Public docs are English-first ([README.md](README.md)); keep [README.it.md](README.it.md) aligned. [docs/DESIGN.md](docs/DESIGN.md) is partly historical - prefer README and code. [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md) is the structured bug ledger; update it when opening/fixing issues.
@@ -39,7 +39,3 @@ Compact guidance for work in this repository. The README is the user-facing sour
 - User preference: code says what it does; comments say why or clarify non-obvious behaviour. Never translate the line. Keep comments short; remove useless, redundant or stale ones. Applies to every code file.
 - User preference: UI interaction tests belong to the user. Do not drive Explorer or other apps with UIAutomation/SendKeys to verify behaviour; use logs and code inspection instead, then report what the user should check.
 - Never commit or push without explicit user permission for that specific action.
-
-## Current high-priority bug
-
-`ES-01` in [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md): a second search started from the results view can lose the origin folder, producing `parent:""` and no results. Read that entry before touching scope/`ApplySearchOptions`/the `KeyDown` handler.

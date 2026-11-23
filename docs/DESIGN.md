@@ -179,8 +179,10 @@ under `HKCU\Software\Classes\CLSID\{GUID}` (with
 `HKCU\Software\EverythingSearchExplorer`. See [README.md](../README.md) for the commands.
 
 The DLL lives in `%LOCALAPPDATA%\EverythingSearchExplorer\nse\<version>\`: a DLL
-already mapped by Explorer cannot be overwritten, so each version has its own
-folder and an update is a fresh copy plus a registry rewrite.
+already mapped by Explorer cannot be overwritten. A new version gets its own
+folder; if the version is unchanged but the DLL differs, the script tries
+`<version>-1`, `<version>-2`, ... and registers that path instead. It then
+restarts Explorer and prunes the folders no longer in use.
 
 ### Build and install from source
 
@@ -277,8 +279,8 @@ involved):
 - `CF_HDROP` and `Shell ID List Array` → `S_OK`, with the right path in
   `DROPFILES`;
 - `GetDetailsEx` → `PKEY_ItemTypeText` = "C++ Source File", `PKEY_Size` = bytes;
-- the NSE builds with `-Wall -Wextra` under MinGW; the mod builds with MSVC x64
-  and its version is kept in sync with `nse/version.h`.
+- the NSE builds with `-Wall -Wextra` under MinGW; the mod builds with MSVC x64.
+  Their versions are independent.
 
 Verified live in `explorer.exe` (Windows 11 x64, Everything 1.5.0.1423):
 
