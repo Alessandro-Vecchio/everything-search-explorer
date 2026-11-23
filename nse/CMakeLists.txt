@@ -8,6 +8,9 @@ add_library(EverythingSearchNse SHARED
 
 target_include_directories(EverythingSearchNse PRIVATE "${CMAKE_SOURCE_DIR}/shared")
 target_compile_definitions(EverythingSearchNse PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+if (ESX_TRACE)
+    target_compile_definitions(EverythingSearchNse PRIVATE ESX_TRACE)
+endif ()
 target_link_libraries(EverythingSearchNse PRIVATE shell32 shlwapi ole32 oleaut32 uuid propsys gdi32)
 
 if (MSVC)

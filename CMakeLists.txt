@@ -19,4 +19,7 @@ endforeach()
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/dist/bin")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/dist/bin")
 
+# Development tracing is opt-in; release builds compile it out.
+option(ESX_TRACE "Write %TEMP%/esx-nse.log from the namespace extension" OFF)
+
 add_subdirectory(nse)

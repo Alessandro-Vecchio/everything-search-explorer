@@ -13,7 +13,8 @@
 [CmdletBinding()]
 param(
     [string]$Configuration = 'Release',
-    [string]$CMakePath
+    [string]$CMakePath,
+    [switch]$Trace
 )
 
 $ErrorActionPreference = 'Stop'
@@ -87,8 +88,9 @@ Write-Host "Using cmake: $cmake"
 Write-Host 'Generator: Visual Studio 17 2022 (x64)'
 
 $buildDir = Join-Path $root 'build'
+$traceFlag = if ($Trace) { '-DESX_TRACE=ON' } else { '-DESX_TRACE=OFF' }
 $args = @(
-    "-S `"$root`" -B `"$buildDir`" -G `"Visual Studio 17 2022`" -A x64",
+    "-S `"$root`" -B `"$buildDir`" -G `"Visual Studio 17 2022`" -A x64 $traceFlag",
     "--build `"$buildDir`" --config $Configuration"
 )
 
