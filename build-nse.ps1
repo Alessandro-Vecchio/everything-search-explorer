@@ -1,14 +1,14 @@
 <#
     Builds EverythingSearchNse.dll into dist\bin.
 
-    Prerequisiti:
-      - Visual Studio Build Tools 2022 con "Desktop development with C++"
+    Prerequisites:
+      - Visual Studio Build Tools 2022 with "Desktop development with C++"
         (winget install Microsoft.VisualStudio.2022.BuildTools)
-      - CMake (MSI o pacchetto winget); la build usa il generator di Visual
-        Studio 2022 già incluso nei Build Tools
+      - CMake (MSI or winget package); the build uses the Visual Studio 2022
+        generator already included in the Build Tools.
 
-    Non serve scaricare l'SDK di Everything: l'estensione parla con Everything
-    via IPC (WM_COPYDATA), quindi non linka ne' carica nulla di voidtools.
+    The Everything SDK is not needed: the extension talks to Everything over
+    IPC (WM_COPYDATA), so it neither links nor loads anything from voidtools.
 #>
 [CmdletBinding()]
 param(
