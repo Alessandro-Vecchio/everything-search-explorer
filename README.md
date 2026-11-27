@@ -53,15 +53,6 @@ flowchart LR
     V -.->|"update notification"| N
 ```
 
-## Usage
-
-1. In an Explorer window press `Ctrl+F` (or `Ctrl+E` / `F3`) to focus the
-   replaced search box.
-2. Type a query and press **Enter**: the view switches to the
-   `Everything Search` folder with name, type, size and date (folders included).
-3. Use the **Search options** button in the command bar to filter.
-4. **Back** returns to the starting folder.
-
 ### Scope
 
 By default the search is limited to the folder currently shown in Explorer,
@@ -76,60 +67,34 @@ these options.
 The mod keeps separate state per tab: box text, caret and results of one tab are
 not adopted by another.
 
-### Search options
-
-Every entry writes Everything modifiers to the request file and applies them to
-the next query; they do not appear in the text box.
-
-| Entry | Effect |
-|---|---|
-| All subfolders | `path:"folder\"` (recursive) |
-| Current folder | `parent:"folder"` (direct children only) |
-| Date modified | `date-modified:today` / `7days` / `30days` |
-| Type | `doc:` / `image:` / `video:` / `audio:` |
-| Size | `size:0` / `size:0..10kb` / `size:10kb..100kb` |
-| System files | `attributes:s` |
-| Compressed folders (ZIP) | `zip:` |
-| File contents | `content:<query>` (can be very slow) |
-
-`Current folder` is available only when a real folder exists to scope to: it
-stays disabled in virtual folders such as "This PC".
-
 ## Setup
 
-Requirements:
-
-- Windows 11 x64, PowerShell 7+, Visual Studio Build Tools 2022, CMake,
-  Windhawk, Everything 1.5+ running non-elevated.
-- Explorer with separate processes:
-
-  ```powershell
-  Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' SeparateProcess 1 -Type DWord
-  ```
-
-  Restart Explorer after running this.
-
-Install the tools:
+Prepare the machine with the setup script from a PowerShell 7 prompt:
 
 ```powershell
-winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
-winget install Kitware.CMake
-winget install Windhawk.Windhawk
-winget install voidtools.Everything
+.\setup.ps1
 ```
 
-The Windows SDK and the WinUI WinMD files must be available (SDK for
-`cppwinrt.exe`; WinMDs in the NuGet cache). If the WinMDs are missing, populate
-the cache with a temporary project:
+It checks Windows 11 x64, PowerShell 7, Visual Studio Build Tools 2022 with the
+C++ workload, CMake, Windhawk, Everything 1.5+ running non-elevated and the
+`SeparateProcess` setting. When something is missing or outdated it asks once
+and installs what it can with winget: Build Tools, Windhawk, Everything and
+CMake only if Visual Studio does not already provide one. The .NET 8 SDK and the
+NuGet WinMD files are required only when the C++/WinRT projection has to be
+regenerated; the script handles that bootstrap automatically and sets
+`SeparateProcess=1` for Explorer. It does not build or install the project.
 
-```powershell
-mkdir "$env:TEMP\esx-winmd"; cd "$env:TEMP\esx-winmd"
-dotnet new classlib -f net8.0
-dotnet add package Microsoft.WindowsAppSDK
-dotnet add package Microsoft.Web.WebView2
-dotnet add package Microsoft.Windows.SDK.NET.Ref
-dotnet restore
-```
+Use `.\setup.ps1 -CheckOnly` for a read-only report: it exits with `0` when all
+requirements are met and `1` otherwise. The script waits for Enter before
+closing; `-NoPause` disables that for automated runs.
+
+Some steps remain manual:
+
+- accept the UAC prompt when winget starts;
+- restart Explorer after the `SeparateProcess` change;
+- start Everything as a normal user (not as administrator);
+- install the Windows SDK manually if it is missing (it normally arrives with
+  the Build Tools).
 
 Build and install:
 
@@ -152,6 +117,34 @@ folder without the mod.
 
 For architecture details see [docs/DIRECT-XAML-REPLACEMENT.md](docs/DIRECT-XAML-REPLACEMENT.md);
 [docs/DESIGN.md](docs/DESIGN.md) is partly historical.
+
+## Usage
+
+1. In an Explorer window press `Ctrl+F` (or `Ctrl+E` / `F3`) to focus the
+   replaced search box.
+2. Type a query and press **Enter**: the view switches to the
+   `Everything Search` folder with name, type, size and date (folders included).
+3. Use the **Search options** button in the command bar to filter.
+4. **Back** returns to the starting folder.
+
+### Search options
+
+Every entry writes Everything modifiers to the request file and applies them to
+the next query; they do not appear in the text box.
+
+| Entry | Effect |
+|---|---|
+| All subfolders | `path:"folder\"` (recursive) |
+| Current folder | `parent:"folder"` (direct children only) |
+| Date modified | `date-modified:today` / `7days` / `30days` |
+| Type | `doc:` / `image:` / `video:` / `audio:` |
+| Size | `size:0` / `size:0..10kb` / `size:10kb..100kb` |
+| System files | `attributes:s` |
+| Compressed folders (ZIP) | `zip:` |
+| File contents | `content:<query>` (can be very slow) |
+
+`Current folder` is available only when a real folder exists to scope to: it
+stays disabled in virtual folders such as "This PC".
 
 ## Troubleshooting
 

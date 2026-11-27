@@ -54,15 +54,6 @@ flowchart LR
     V -.->|"notifica di aggiornamento"| N
 ```
 
-## Come si usa
-
-1. In una finestra di Explorer premi `Ctrl+F` (o `Ctrl+E` / `F3`) per dare il
-   focus alla casella sostituita.
-2. Digita la query e premi **Invio**: la vista passa alla cartella
-   `Everything Search` con nome, tipo, dimensione e data (cartelle incluse).
-3. Usa il pulsante **Opzioni di ricerca** nella barra dei comandi per filtrare.
-4. **Indietro** torna alla cartella di partenza.
-
 ### Scope
 
 Per impostazione predefinita la ricerca è limitata alla cartella attualmente
@@ -78,59 +69,33 @@ opzioni richiedono Everything 1.5.
 La mod mantiene uno stato separato per scheda: testo della casella, caret e
 risultati di una scheda non vengono adottati da un'altra.
 
-### Opzioni di ricerca
-
-Tutte le voci scrivono modificatori Everything nel file di request e vengono
-applicate alla query successiva; non compaiono nella casella di testo.
-
-| Voce | Effetto |
-|---|---|
-| Tutte le sottocartelle | `path:"cartella\"` (ricorsivo) |
-| Cartella corrente | `parent:"cartella"` (solo figli diretti) |
-| Data ultima modifica | `date-modified:today` / `7days` / `30days` |
-| Tipologia | `doc:` / `image:` / `video:` / `audio:` |
-| Dimensioni | `size:0` / `size:0..10kb` / `size:10kb..100kb` |
-| File di sistema | `attributes:s` |
-| Cartelle compresse (ZIP) | `zip:` |
-| Contenuto file | `content:<query>` (può essere molto lento) |
-
-`Cartella corrente` è disponibile solo quando esiste una cartella reale a cui
-limitare la ricerca: dalle cartelle virtuali come "Questo PC" resta disabilitata.
-
 ## Setup
 
-Requisiti:
-
-- Windows 11 x64, PowerShell 7+, Visual Studio Build Tools 2022, CMake,
-  Windhawk, Everything 1.5+ in esecuzione senza elevazione.
-- Explorer a processi separati:
-
-  ```powershell
-  Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' SeparateProcess 1 -Type DWord
-  ```
-
-  Riavvia Explorer dopo averlo eseguito.
-
-Installa gli strumenti:
+Prepara la macchina con lo script di setup da un prompt di PowerShell 7:
 
 ```powershell
-winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
-winget install Kitware.CMake
-winget install Windhawk.Windhawk
-winget install voidtools.Everything
+.\setup.ps1
 ```
 
-Servono il Windows SDK (per `cppwinrt.exe`) e i WinMD di WinUI nella cache NuGet.
-Se i WinMD mancano, popola la cache con un progetto temporaneo:
+Controlla Windows 11 x64, PowerShell 7, Visual Studio Build Tools 2022 con il
+workload C++, CMake, Windhawk, Everything 1.5+ in esecuzione senza elevazione e
+l'impostazione `SeparateProcess`. Se qualcosa manca o è obsoleto chiede una sola
+volta e installa ciò che può con winget: Build Tools, Windhawk, Everything e
+CMake solo se Visual Studio non lo fornisce già. .NET 8 SDK e WinMD NuGet
+servono solo quando va rigenerata la proiezione C++/WinRT: lo script esegue in
+automatico quel bootstrap e imposta `SeparateProcess=1` per Explorer. Non compila
+né installa il progetto.
 
-```powershell
-mkdir "$env:TEMP\esx-winmd"; cd "$env:TEMP\esx-winmd"
-dotnet new classlib -f net8.0
-dotnet add package Microsoft.WindowsAppSDK
-dotnet add package Microsoft.Web.WebView2
-dotnet add package Microsoft.Windows.SDK.NET.Ref
-dotnet restore
-```
+Usa `.\setup.ps1 -CheckOnly` per un controllo in sola lettura: restituisce `0` se
+tutti i requisiti sono soddisfatti, `1` altrimenti. Lo script attende Invio prima
+di chiudersi; `-NoPause` disattiva l'attesa per le esecuzioni automatiche.
+
+Alcuni passi restano manuali:
+
+- accettare il prompt UAC quando parte winget;
+- riavviare Explorer dopo la modifica di `SeparateProcess`;
+- avviare Everything come utente normale (non come amministratore);
+- installare manualmente il Windows SDK se manca (di norma arriva con i Build Tools).
 
 Compila e installa:
 
@@ -154,6 +119,34 @@ cartella risultati senza passare dalla mod.
 
 Per l'architettura vedi [docs/DIRECT-XAML-REPLACEMENT.md](docs/DIRECT-XAML-REPLACEMENT.md);
 [docs/DESIGN.md](docs/DESIGN.md) è in parte storico.
+
+## Come si usa
+
+1. In una finestra di Explorer premi `Ctrl+F` (o `Ctrl+E` / `F3`) per dare il
+   focus alla casella sostituita.
+2. Digita la query e premi **Invio**: la vista passa alla cartella
+   `Everything Search` con nome, tipo, dimensione e data (cartelle incluse).
+3. Usa il pulsante **Opzioni di ricerca** nella barra dei comandi per filtrare.
+4. **Indietro** torna alla cartella di partenza.
+
+### Opzioni di ricerca
+
+Tutte le voci scrivono modificatori Everything nel file di request e vengono
+applicate alla query successiva; non compaiono nella casella di testo.
+
+| Voce | Effetto |
+|---|---|
+| Tutte le sottocartelle | `path:"cartella\"` (ricorsivo) |
+| Cartella corrente | `parent:"cartella"` (solo figli diretti) |
+| Data ultima modifica | `date-modified:today` / `7days` / `30days` |
+| Tipologia | `doc:` / `image:` / `video:` / `audio:` |
+| Dimensioni | `size:0` / `size:0..10kb` / `size:10kb..100kb` |
+| File di sistema | `attributes:s` |
+| Cartelle compresse (ZIP) | `zip:` |
+| Contenuto file | `content:<query>` (può essere molto lento) |
+
+`Cartella corrente` è disponibile solo quando esiste una cartella reale a cui
+limitare la ricerca: dalle cartelle virtuali come "Questo PC" resta disabilitata.
 
 ## Risoluzione problemi
 
